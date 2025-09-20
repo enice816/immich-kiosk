@@ -12,7 +12,7 @@ jobs:
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GHCR }}
           fetch-depth: 0
 
       - name: Add upstream
