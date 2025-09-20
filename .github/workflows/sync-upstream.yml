@@ -1,0 +1,27 @@
+name: Sync upstream repo
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # run daily at 3 AM UTC
+  workflow_dispatch:       # allow manual trigger from Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Add upstream
+        run: |
+          git remote add upstream https://github.com/damongolding/immich-kiosk.git
+          git fetch upstream
+
+      - name: Merge upstream/main into feature/clock-seconds
+        run: |
+          git checkout feature/clock-seconds
+          git merge upstream/main --no-edit || true
+          git push origin feature/clock-seconds
