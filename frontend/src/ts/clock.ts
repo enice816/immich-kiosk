@@ -5,7 +5,7 @@ import { locales } from "./locales";
 const CLOCK_UPDATE_INTERVAL = 1000;
 
 const TIME_FORMATS = {
-    TWELVE_HOUR: "h:mm:ssa" as const,
+    TWELVE_HOUR: "h:mm:ss a" as const,
     TWENTY_FOUR_HOUR: "HH:mm:ss" as const,
 } as const;
 
