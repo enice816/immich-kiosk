@@ -1,6 +1,6 @@
 services:
   immich-kiosk:
-    image: ghcr.io/enice816/immich-kiosk:clock-seconds
+    image: ghcr.io/damongolding/immich-kiosk:latest
     container_name: immich-kiosk
     environment:
       LANG: "en_GB"
