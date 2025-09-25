@@ -113,29 +113,20 @@ class Clock {
 
     private updateTime(now: Date): void {
         if (!this.config.showTime || !this.elements.time) return;
-    
+
+        const timeFormat =
+            this.config.timeFormat === "12"
+                ? TIME_FORMATS.TWELVE_HOUR
+                : TIME_FORMATS.TWENTY_FOUR_HOUR;
+
         try {
-            if (this.config.timeFormat === "12") {
-                const hoursMinutes = format(now, "h:mm", { locale: this.lang });
-                const seconds = format(now, "ss", { locale: this.lang });
-                const ampm = format(now, "a", { locale: this.lang }).toLowerCase();
-    
-                this.elements.time.innerHTML = `
-                    <span class="hm">${hoursMinutes}</span>
-                    <span class="secampm">
-                      <span class="sec">${seconds}</span>
-                      <span class="ampm">${ampm}</span>
-                    </span>
-                `;
-            } else {
-                const hoursMinutes = format(now, "HH:mm", { locale: this.lang });
-                const seconds = format(now, "ss", { locale: this.lang });
-    
-                this.elements.time.innerHTML = `
-                    <span class="hm">${hoursMinutes}</span>
-                    <span class="sec">${seconds}</span>
-                `;
-            }
+            const formattedTime = format(now, timeFormat, {
+                locale: this.lang,
+            });
+            this.elements.time.innerHTML =
+                this.config.timeFormat === "12"
+                    ? formattedTime.toLowerCase()
+                    : formattedTime;
         } catch (error) {
             console.error("Error formatting time:", error);
             this.elements.time.innerHTML = now.toLocaleTimeString();
