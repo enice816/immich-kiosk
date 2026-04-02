@@ -18,17 +18,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/charmbracelet/log"
+	"charm.land/log/v2"
 	"github.com/damongolding/immich-kiosk/internal/common"
 	"github.com/damongolding/immich-kiosk/internal/config"
+	"github.com/damongolding/immich-kiosk/internal/i18n"
 	"github.com/damongolding/immich-kiosk/internal/immich"
 	"github.com/damongolding/immich-kiosk/internal/kiosk"
 	imageComponent "github.com/damongolding/immich-kiosk/internal/templates/components/image"
 	"github.com/damongolding/immich-kiosk/internal/templates/partials"
 	"github.com/damongolding/immich-kiosk/internal/utils"
+	"github.com/damongolding/immich-kiosk/internal/webhooks"
 	"github.com/dustin/go-humanize"
 	"github.com/klauspost/compress/zstd"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/vmihailenco/msgpack/v5"
 	"golang.org/x/sync/errgroup"
 )
@@ -44,7 +46,7 @@ var ErrMaxStorageReached = errors.New("max offline storage size reached")
 // It attempts to load and render a cached offline asset, handling asset expiration, cache directory creation, and duplicate removal.
 // If no valid offline assets are available or assets have expired, it initiates an asynchronous download and displays a status page.
 func OfflineMode(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		requestData, err := InitializeRequestData(c, baseConfig)
 		if err != nil {
@@ -57,7 +59,7 @@ func OfflineMode(baseConfig *config.Config, com *common.Common) echo.HandlerFunc
 		requestConfig := *baseConfig
 		requestConfig.History = requestData.RequestConfig.History
 		requestConfig.Memories = false
-		requestConfig.AlbumVideo = false
+		requestConfig.ShowVideos = false
 		requestConfig.Theme = requestData.RequestConfig.Theme
 
 		if len(requestConfig.History) > 1 && !strings.HasPrefix(requestConfig.History[len(requestConfig.History)-1], "*") {
@@ -137,6 +139,9 @@ func OfflineMode(baseConfig *config.Config, com *common.Common) echo.HandlerFunc
 			utils.TrimHistory(&requestConfig.History, kiosk.HistoryLimit)
 			viewData.History = requestConfig.History
 			viewData.Theme = requestConfig.Theme
+			viewData.Kiosk.DemoMode = requestConfig.Kiosk.DemoMode
+
+			go webhooks.Trigger(com.Context(), requestData, KioskVersion, webhooks.NewOfflineAsset, viewData)
 
 			return Render(c, http.StatusOK, imageComponent.Image(viewData, com.Secret()))
 		}
@@ -238,10 +243,13 @@ func downloadOfflineAssets(requestConfig config.Config, requestCtx common.Contex
 				viewData.UseOfflineMode = true
 				viewData.History = []string{}
 
-				var filename string
+				var sb strings.Builder
 				for _, asset := range viewData.Assets {
-					filename += asset.ImmichAsset.ID + asset.User
+					sb.WriteString(asset.ImmichAsset.ID)
+					sb.WriteString(asset.User)
 				}
+
+				filename := sb.String()
 				filename = filepath.Join(OfflineAssetsPath, generateCacheFilename(filename))
 
 				if _, exists := createdFiles.Load(filename); exists {
@@ -447,7 +455,7 @@ func generateCacheFilename(uuids ...string) string {
 //  3. Renders a status page with download information
 //
 // Returns an error if the render operation fails
-func handleNoOfflineAssets(c echo.Context, requestConfig config.Config, com *common.Common, requestID, deviceID string) error {
+func handleNoOfflineAssets(c *echo.Context, requestConfig config.Config, com *common.Common, requestID, deviceID string) error {
 	requestCtx := common.CopyContext(c)
 	go func(c common.ContextCopy) {
 		downloadErr := downloadOfflineAssets(requestConfig, c, com, requestID, deviceID)
@@ -472,20 +480,26 @@ func handleNoOfflineAssets(c echo.Context, requestConfig config.Config, com *com
 		}
 	}
 
+	t := i18n.T()
+
 	message := fmt.Sprintf(`
 		<ul>
-			<li>Limit: <strong>%v</strong> assets</li>
-			<li>Storage Capacity: <strong>%s</strong> </li>
-			<li>Expiration: <strong>%s</strong></li>
+			<li>%s: <strong>%v</strong> %s</li>
+			<li>%s: <strong>%s</strong></li>
+			<li>%s: <strong>%s</strong></li>
 		</ul>
 		`,
+		t("limit"),
 		requestConfig.OfflineMode.NumberOfAssets,
+		t("assets"),
+		t("storage_capacity"),
 		maxSizeMessage,
+		t("expiration"),
 		expiryMessage,
 	)
 
 	return Render(c, http.StatusOK, partials.Message(partials.MessageData{
-		Title:         "Downloading Assets",
+		Title:         t("downloading_assets"),
 		Message:       message,
 		IsDownloading: true,
 	}))
@@ -529,7 +543,7 @@ func checkOfflineAssetsExpiration(ctx context.Context, immichURL string) (bool, 
 	return false, nil
 }
 
-func IsDownloading(c echo.Context) error {
+func IsDownloading(c *echo.Context) error {
 	if IsOfflineDownloadRunning() {
 		return c.NoContent(http.StatusOK)
 	}

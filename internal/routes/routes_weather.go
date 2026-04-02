@@ -2,18 +2,19 @@ package routes
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/log"
+	"charm.land/log/v2"
 	"github.com/damongolding/immich-kiosk/internal/config"
 	"github.com/damongolding/immich-kiosk/internal/templates/partials"
 	"github.com/damongolding/immich-kiosk/internal/weather"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 func Weather(baseConfig *config.Config) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		requestData, err := InitializeRequestData(c, baseConfig)
 		if err != nil {
@@ -27,7 +28,12 @@ func Weather(baseConfig *config.Config) echo.HandlerFunc {
 
 		requestID := requestData.RequestID
 
-		locationName := c.FormValue("weather")
+		locationName := c.FormValue(weather.WeatherParam)
+		// Enable weather rotation in demo mode
+		if baseConfig.Kiosk.DemoMode {
+			locationName = weather.WeatherRotation
+		}
+		nextWeatherRotation := 0
 
 		log.Debug(
 			requestID,
@@ -36,12 +42,23 @@ func Weather(baseConfig *config.Config) echo.HandlerFunc {
 			"location", locationName,
 		)
 
+		// handle weather rotation
+		if locationName == weather.WeatherRotation {
+			currentWeatherRotation, cwrErr := strconv.Atoi(c.FormValue(weather.WeatherRotationParam))
+			if cwrErr != nil {
+				log.Warn("Could not parse weather location position", "error", cwrErr)
+				return c.NoContent(http.StatusNoContent)
+			}
+			nextWeatherRotation, locationName = weather.LocationRotator.Next(currentWeatherRotation)
+			log.Info("Rotating weather location", "location", locationName, "position", nextWeatherRotation)
+		}
+
 		if locationName == "" {
-			if !baseConfig.HasWeatherDefault {
+			if !baseConfig.Weather.HasDefault {
 				log.Warn("No weather location provided and no default set")
 				return c.NoContent(http.StatusNoContent)
 			}
-			for _, loc := range baseConfig.WeatherLocations {
+			for _, loc := range baseConfig.Weather.Locations {
 				if loc.Default {
 					locationName = loc.Name
 					break
@@ -61,7 +78,7 @@ func Weather(baseConfig *config.Config) echo.HandlerFunc {
 				time.Sleep(time.Duration(1<<attempts) * time.Second)
 				continue
 			}
-			return Render(c, http.StatusOK, partials.WeatherLocation(weatherLocation, baseConfig.SystemLang))
+			return Render(c, http.StatusOK, partials.WeatherLocation(weatherLocation, nextWeatherRotation, baseConfig.SystemLang))
 
 		}
 

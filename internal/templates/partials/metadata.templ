@@ -52,6 +52,9 @@ templ AssetMetadata(viewData common.ViewData, assetIndex int) {
 		@templ.Raw(bubbleBackground(className, viewData.Assets[assetIndex]))
 	}
 	<div class={ "asset--metadata", fmt.Sprintf("asset--metadata--theme-%s", viewData.Theme), templ.KV("right-align-icons", rightAlignIcons), className }>
+		if viewData.ShowImageRating {
+			@ratingStars(viewData.Assets[assetIndex].ImmichAsset.ExifInfo.Rating)
+		}
 		if showUser && viewData.Assets[assetIndex].User != "" {
 			@userIcon(cases.Title(language.English).String(viewData.Assets[assetIndex].User))
 		}
@@ -73,11 +76,14 @@ templ AssetMetadata(viewData common.ViewData, assetIndex int) {
 		if showDescription && len(viewData.Assets[assetIndex].ImmichAsset.ExifInfo.Description) > 0 {
 			@descriptionIcon(viewData.Assets[assetIndex].ImmichAsset.ExifInfo.Description)
 		}
+		if viewData.ShowImageCamera {
+			@cameraIcon(AssetCameraData(viewData.Assets[assetIndex].ImmichAsset.ExifInfo))
+		}
 		if viewData.ShowImageExif {
 			@exifIcon(AssetExif(viewData.Assets[assetIndex].ImmichAsset.ExifInfo))
 		}
 		if viewData.ShowImageLocation {
-			@locationIcon(AssetLocation(viewData.Assets[assetIndex].ImmichAsset.ExifInfo, viewData.HideCountries))
+			@locationIcon(AssetLocation(viewData.Assets[assetIndex].ImmichAsset.ExifInfo, viewData.ImageLocation, viewData.HideCountries))
 		}
 		if viewData.ShowImageID {
 			@idIcon(viewData.Assets[assetIndex].ImmichAsset.ID)
@@ -98,18 +104,18 @@ templ AssetMetadata(viewData common.ViewData, assetIndex int) {
 // Returns:
 //   - string: Comma-separated location with optional line break before country,
 //     or empty string if no location data present
-func AssetLocation(info immich.ExifInfo, hideCountries []string) string {
+func AssetLocation(info immich.ExifInfo, l config.ImageLocation, hideCountries []string) string {
 	var parts []string
 
-	if info.City != "" {
+	if info.City != "" && !l.HideCity {
 		parts = append(parts, info.City)
 	}
 
-	if info.State != "" {
+	if info.State != "" && !l.HideState {
 		parts = append(parts, info.State)
 	}
 
-	if info.Country != "" && !slices.Contains(hideCountries, strings.ToLower(info.Country)) {
+	if info.Country != "" && !l.HideCountry && !slices.Contains(hideCountries, strings.ToLower(info.Country)) {
 		if len(parts) > 0 {
 			parts = append(parts, "<br class=\"responsive-break\"/>"+info.Country)
 		} else {
@@ -122,6 +128,11 @@ func AssetLocation(info immich.ExifInfo, hideCountries []string) string {
 	}
 
 	return strings.Join(parts, ", ")
+}
+
+func trimFloatToString(f float64) string {
+	s := fmt.Sprintf("%.2f", f)
+	return strings.TrimRight(strings.TrimRight(s, "0"), ".")
 }
 
 // AssetExif generates a formatted string containing camera EXIF metadata.
@@ -141,31 +152,43 @@ func AssetExif(info immich.ExifInfo) string {
 	}
 
 	if info.FNumber != 0 {
-		stats.WriteString(fmt.Sprintf("<span class=\"asset--metadata--exif--fnumber\">&#402;</span>/%.1f", info.FNumber))
+		fmt.Fprintf(&stats, "<span class=\"asset--metadata--exif--fnumber\">&#402;</span>/%.1f", info.FNumber)
 	}
 
 	if info.ExposureTime != "" {
 		if stats.Len() > 0 {
 			stats.WriteString("<span class=\"asset--metadata--exif--seperator\">&#124;</span>")
 		}
-		stats.WriteString(fmt.Sprintf("%s<small>s</small>", info.ExposureTime))
+		fmt.Fprintf(&stats, "%s<small>s</small>", info.ExposureTime)
 	}
 
 	if info.FocalLength != 0 {
 		if stats.Len() > 0 {
 			stats.WriteString("<span class=\"asset--metadata--exif--seperator\">&#124;</span>")
 		}
-		stats.WriteString(fmt.Sprintf("%vmm", info.FocalLength))
+		f := trimFloatToString(info.FocalLength)
+		fmt.Fprintf(&stats, "%smm", f)
 	}
 
 	if info.Iso != 0 {
 		if stats.Len() > 0 {
 			stats.WriteString("<span class=\"asset--metadata--exif--seperator\">&#124;</span>")
 		}
-		stats.WriteString(fmt.Sprintf("ISO %v", info.Iso))
+		fmt.Fprintf(&stats, "ISO %d", info.Iso)
 	}
 
 	return stats.String()
+}
+
+func AssetCameraData(exifInfo immich.ExifInfo) string {
+	ma := strings.TrimSpace(exifInfo.Make)
+	mo := strings.TrimSpace(exifInfo.Model)
+
+	if utils.ContainsWholeWord(ma, mo) {
+		return mo
+	}
+
+	return strings.TrimSpace(fmt.Sprintf("%s %s", ma, mo))
 }
 
 // AssetDateTime generates a formatted date/time string for an asset.

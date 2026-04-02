@@ -65,14 +65,6 @@ var (
 		Transport: httpTransport,
 	}
 
-	supportedImageMimeTypes = []string{
-		"image/jpeg",
-		"image/jpg",
-		"image/png",
-		"image/gif",
-		"image/webp",
-	}
-
 	ImageOnlyAssetTypes = []AssetType{ImageType}
 	VideoOnlyAssetTypes = []AssetType{VideoType}
 	AllAssetTypes       = []AssetType{ImageType, VideoType}
@@ -95,28 +87,29 @@ type Owner struct {
 }
 
 type ExifInfo struct {
+	City             string    `json:"city"`
+	Country          string    `json:"country"`
 	DateTimeOriginal time.Time `json:"dateTimeOriginal"`
-	ModifyDate       time.Time `json:"modifyDate"`
-	ProjectionType   any       `json:"-"` // `json:"projectionType"`
+	Description      string    `json:"description"`
+	ExifImageHeight  int       `json:"exifImageHeight"`
+	ExifImageWidth   int       `json:"exifImageWidth"`
+	ExposureTime     string    `json:"exposureTime"`
+	FileSizeInByte   int       `json:"fileSizeInByte"`
+	FNumber          float64   `json:"fNumber"`
+	FocalLength      float64   `json:"focalLength"`
+	ImageOrientation ImageOrientation
+	Iso              int       `json:"iso"`
+	Latitude         float64   `json:"latitude"`
+	LensModel        string    `json:"lensModel"`
+	Longitude        float64   `json:"longitude"`
 	Make             string    `json:"make"`
 	Model            string    `json:"model"`
+	ModifyDate       time.Time `json:"modifyDate"`
 	Orientation      string    `json:"orientation"`
-	TimeZone         string    `json:"timeZone"`
-	LensModel        string    `json:"lensModel"`
-	ExposureTime     string    `json:"exposureTime"`
-	City             string    `json:"city"`
+	ProjectionType   any       `json:"-"` // `json:"projectionType"`
+	Rating           float32   `json:"rating"`
 	State            string    `json:"state"`
-	Country          string    `json:"country"`
-	Description      string    `json:"description"`
-	ImageOrientation ImageOrientation
-	ExifImageWidth   int     `json:"exifImageWidth"`
-	ExifImageHeight  int     `json:"exifImageHeight"`
-	FileSizeInByte   int     `json:"fileSizeInByte"`
-	FNumber          float64 `json:"fNumber"`
-	FocalLength      float64 `json:"focalLength"`
-	Iso              int     `json:"iso"`
-	Latitude         float64 `json:"latitude"`
-	Longitude        float64 `json:"longitude"`
+	TimeZone         string    `json:"timeZone"`
 }
 
 type BirthDate string
@@ -140,10 +133,10 @@ type Person struct {
 
 type Tag struct {
 	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Value     string    `json:"value"`
-	CreatedAt time.Time `json:"-"` // `json:"createdAt"`
-	UpdatedAt time.Time `json:"-"` // `json:"updatedAt"`
+	Name      string    `json:"name"`  // e.g "child"
+	Value     string    `json:"value"` // e.g "parent/child"
+	CreatedAt time.Time `json:"-"`     // `json:"createdAt"`
+	UpdatedAt time.Time `json:"-"`     // `json:"updatedAt"`
 	Color     string    `json:"color"`
 }
 
@@ -168,7 +161,6 @@ type Asset struct {
 
 	ctx context.Context `json:"-"`
 
-	// Data added and used by Kiosk
 	mu               *sync.Mutex
 	Owner            Owner     `json:"owner"`
 	ID               string    `json:"id"`
@@ -180,8 +172,9 @@ type Asset struct {
 	OriginalPath     string    `json:"-"` // `json:"originalPath"`
 	OriginalFileName string    `json:"originalFileName"`
 	OriginalMimeType string    `json:"originalMimeType"`
-	Thumbhash        string    `json:"-"` // `json:"thumbhash"`
-	Duration         string    `json:"-"` // `json:"duration"`
+	ServedMimeType   string    `json:"servedMimeType"` // mime type served from the Immich server
+	Thumbhash        string    `json:"-"`              // `json:"thumbhash"`
+	Duration         string    `json:"duration"`
 	LivePhotoVideoID string    `json:"livePhotoVideoId"`
 	Checksum         string    `json:"checksum"`
 	Visibility       string    `json:"-"` // `json:"visibility"`
@@ -198,6 +191,7 @@ type Asset struct {
 	ExifInfo        ExifInfo `json:"exifInfo"`
 
 	requestConfig config.Config `json:"-"`
+	IsEdited      bool          `json:"isEdited"`
 	IsFavorite    bool          `json:"isFavorite"`
 	IsArchived    bool          `json:"isArchived"`
 	IsTrashed     bool          `json:"isTrashed"`
@@ -218,6 +212,7 @@ type Album struct {
 type Albums []Album
 
 type SearchRandomBody struct {
+	AlbumIDs      []string `url:"albumIds,omitempty" json:"albumIds,omitempty"`
 	City          string   `url:"city,omitempty" json:"city,omitempty"`
 	Country       string   `url:"country,omitempty" json:"country,omitempty"`
 	CreatedAfter  string   `url:"createdAfter,omitempty" json:"createdAfter,omitempty"`
@@ -227,6 +222,7 @@ type SearchRandomBody struct {
 	LibraryID     string   `url:"libraryId,omitempty" json:"libraryId,omitempty"`
 	Make          string   `url:"make,omitempty" json:"make,omitempty"`
 	Model         string   `url:"model,omitempty" json:"model,omitempty"`
+	Ocr           string   `url:"ocr,omitempty" json:"ocr,omitempty"`
 	State         string   `url:"state,omitempty" json:"state,omitempty"`
 	TakenAfter    string   `url:"takenAfter,omitempty" json:"takenAfter,omitempty"`
 	TakenBefore   string   `url:"takenBefore,omitempty" json:"takenBefore,omitempty"`
@@ -235,6 +231,7 @@ type SearchRandomBody struct {
 	Type          string   `url:"type,omitempty" json:"type,omitempty"`
 	UpdatedAfter  string   `url:"updatedAfter,omitempty" json:"updatedAfter,omitempty"`
 	UpdatedBefore string   `url:"updatedBefore,omitempty" json:"updatedBefore,omitempty"`
+	Rating        *float32 `url:"rating,omitempty" json:"rating,omitempty"`
 	PersonIDs     []string `url:"personIds,omitempty" json:"personIds,omitempty"`
 	TagIDs        []string `url:"tagIds,omitempty" json:"tagIds,omitempty"`
 	Size          int      `url:"size,omitempty" json:"size,omitempty"`
@@ -395,6 +392,7 @@ type APIResponse interface {
 		UpsertTagResponse |
 		UserResponse |
 		AllPeopleResponse |
+		StatisticsResponse |
 		[]byte
 }
 

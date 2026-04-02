@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/log"
+	"charm.land/log/v2"
 	"github.com/damongolding/immich-kiosk/internal/cache"
 	"github.com/damongolding/immich-kiosk/internal/config"
 	"github.com/damongolding/immich-kiosk/internal/demo"
@@ -53,7 +53,7 @@ func withImmichAPICache[T APIResponse](immichAPICall apiCall, requestID, deviceI
 		apiCacheKey := cache.APICacheKey(apiURL, deviceID, requestConfig.SelectedUser)
 
 		if apiData, found := cache.Get(apiCacheKey); found {
-			log.Debug(requestID+" Cache hit", "url", apiURL)
+			log.Debug(strings.TrimSpace(requestID+" Cache hit"), "url", apiURL)
 			data, ok := apiData.([]byte)
 			if !ok {
 				return nil, contentType, errors.New("cache data type assertion failed")
@@ -85,7 +85,7 @@ func withImmichAPICache[T APIResponse](immichAPICall apiCall, requestID, deviceI
 			return nil, contentType, err
 		}
 
-		cache.Set(apiCacheKey, jsonBytes)
+		cache.Set(apiCacheKey, jsonBytes, requestConfig.Duration)
 		if requestConfig.Kiosk.DebugVerbose {
 			log.Debug(requestID+" Cache saved", "url", apiURL)
 		}
@@ -160,8 +160,7 @@ func (a *Asset) immichAPICall(ctx context.Context, method, apiURL string, body [
 			lastErr = resErr
 
 			// Type assert to get more details about the error
-			var urlErr *url.Error
-			if errors.As(resErr, &urlErr) {
+			if urlErr, ok := errors.AsType[*url.Error](resErr); ok {
 				log.Error("Request failed",
 					"attempt", attempts,
 					"URL", apiURL,
@@ -349,13 +348,13 @@ func (a *Asset) AssetInfo(requestID, deviceID string) error {
 	body, _, err := immichAPICall(a.ctx, http.MethodGet, apiURL.String(), nil)
 	if err != nil {
 		_, _, err = immichAPIFail(immichAsset, err, body, apiURL.String())
-		return fmt.Errorf("fetching asset info: err %w", err)
+		return fmt.Errorf("fetching asset info, err=%w", err)
 	}
 
 	err = json.Unmarshal(body, &immichAsset)
 	if err != nil {
 		_, _, err = immichAPIFail(immichAsset, err, body, apiURL.String())
-		return fmt.Errorf("fetching asset info: err %w", err)
+		return fmt.Errorf("unmarshal asset info, err=%w", err)
 	}
 
 	return a.mergeAssetInfo(immichAsset)
@@ -373,7 +372,7 @@ func (a *Asset) ImagePreview() ([]byte, string, error) {
 	}
 
 	assetSize := AssetSizeThumbnail
-	if a.requestConfig.UseOriginalImage && slices.Contains(supportedImageMimeTypes, a.OriginalMimeType) {
+	if a.requestConfig.UseOriginalImage && slices.Contains(kiosk.SupportedImageMimeTypes, a.OriginalMimeType) {
 		assetSize = AssetSizeOriginal
 	}
 
@@ -382,6 +381,10 @@ func (a *Asset) ImagePreview() ([]byte, string, error) {
 		Host:     u.Host,
 		Path:     path.Join("api", "assets", a.ID, assetSize),
 		RawQuery: "size=preview",
+	}
+
+	if !a.requestConfig.UseOriginalImage {
+		apiURL.RawQuery += "&edited=true"
 	}
 
 	return a.immichAPICall(a.ctx, http.MethodGet, apiURL.String(), nil)
@@ -533,17 +536,17 @@ func (a *Asset) FacesCenterPointPX() (float64, float64) {
 }
 
 // containsTag checks if an asset has a specific tag (case-insensitive).
-// It iterates through the asset's tags and compares the given tagName
-// with each tag's name, ignoring case.
+// It iterates through the asset's tags and compares the given tagValue
+// with each tag's value, ignoring case.
 //
 // Parameters:
-//   - tagName: The name of the tag to search for (case-insensitive)
+//   - tagValue: The name of the tag to search for (case-insensitive)
 //
 // Returns:
 //   - bool: true if the tag is found, false otherwise
-func (a *Asset) containsTag(tagName string) bool {
+func (a *Asset) containsTag(tagValue string) bool {
 	for _, tag := range a.Tags {
-		if strings.EqualFold(tag.Name, tagName) {
+		if strings.EqualFold(tag.Value, tagValue) {
 			return true
 		}
 	}
@@ -565,6 +568,7 @@ func (a *Asset) containsTag(tagName string) bool {
 func (a *Asset) isValidAsset(requestID, deviceID string, allowedTypes []AssetType, wantedRatio ImageOrientation) bool {
 	return a.hasValidBasicProperties(allowedTypes, wantedRatio) &&
 		a.hasValidDateFilter() &&
+		a.hasValidPartners() &&
 		a.hasValidAlbums(requestID, deviceID) &&
 		a.hasValidPeople(requestID, deviceID) &&
 		a.hasValidTags(requestID, deviceID)
@@ -581,6 +585,9 @@ func (a *Asset) isValidAsset(requestID, deviceID string, allowedTypes []AssetTyp
 //   - bool: true if basic properties are valid, false otherwise
 func (a *Asset) hasValidBasicProperties(allowedTypes []AssetType, wantedRatio ImageOrientation) bool {
 	if !slices.Contains(allowedTypes, a.Type) {
+		return false
+	}
+	if a.Type == VideoType && !a.durationCheck() {
 		return false
 	}
 	if a.IsTrashed {
@@ -655,6 +662,51 @@ func (a *Asset) hasValidPeople(requestID, deviceID string) bool {
 	})
 }
 
+func (a *Asset) hasValidPartners() bool {
+	return !slices.Contains(a.requestConfig.ExcludedPartners, a.Owner.ID)
+}
+
+// matchesTagPattern checks if a tag matches a given pattern using glob-style matching.
+//
+// Pattern syntax:
+//   - "parent" matches exactly "parent" (case-insensitive)
+//   - "parent/*" matches direct children only (e.g., "parent/child" but not "parent/child/grandchild")
+//   - "parent/**" matches all descendants at any depth (e.g., "parent/child", "parent/child/grandchild", etc.)
+//
+// Note: Wildcards match descendants only, not the parent tag itself.
+// Both tag and pattern are trimmed of leading/trailing slashes and compared case-insensitively.
+//
+// Examples:
+//
+//	matchesTagPattern("parent", "parent")                     // true
+//	matchesTagPattern("parent/child", "parent")               // false
+//	matchesTagPattern("parent/child", "parent/*")             // true
+//	matchesTagPattern("parent/child/grandchild", "parent/*")  // false
+//	matchesTagPattern("parent/child/grandchild", "parent/**") // true
+//	matchesTagPattern("parent", "parent/**")                  // false
+func matchesTagPattern(value, pattern string) bool {
+	pattern = strings.Trim(strings.ToLower(pattern), "/")
+	value = strings.Trim(strings.ToLower(value), "/")
+
+	// Recursive wildcard: parent/** (descendants only, not parent itself)
+	if base, ok := strings.CutSuffix(pattern, "/**"); ok {
+		return strings.HasPrefix(value, base+"/")
+	}
+
+	// Single-level wildcard: parent/* (direct children only)
+	if base, ok := strings.CutSuffix(pattern, "/*"); ok {
+		// Check if value starts with base/ and has no additional slashes
+		if !strings.HasPrefix(value, base+"/") {
+			return false
+		}
+		remainder := strings.TrimPrefix(value, base+"/")
+		return !strings.Contains(remainder, "/")
+	}
+
+	// Exact match
+	return value == pattern
+}
+
 // hasValidTags checks if the asset has any tags that would exclude it from processing.
 // It first fetches additional asset metadata via AssetInfo if needed. After getting
 // the metadata, it restores the asset's orientation ratio since AssetInfo can override
@@ -681,7 +733,9 @@ func (a *Asset) hasValidTags(requestID, deviceID string) bool {
 	}
 
 	return !slices.ContainsFunc(a.Tags, func(assetTag Tag) bool {
-		return slices.Contains(a.requestConfig.ExcludedTags, strings.ToLower(assetTag.Name))
+		return slices.ContainsFunc(a.requestConfig.ExcludedTags, func(excluded string) bool {
+			return matchesTagPattern(assetTag.Value, excluded)
+		})
 	})
 }
 

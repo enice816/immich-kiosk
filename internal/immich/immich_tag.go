@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/log"
+	"charm.land/log/v2"
 	"github.com/damongolding/immich-kiosk/internal/cache"
 	"github.com/damongolding/immich-kiosk/internal/kiosk"
 	"github.com/google/go-querystring/query"
@@ -74,12 +74,12 @@ func (a *Asset) AllTags(requestID, deviceID string) (Tags, string, error) {
 // The requestID and deviceID are used for caching and logging purposes.
 func (a *Asset) AssetsWithTagCount(tagID string, requestID, deviceID string) (int, error) {
 
-	var allAssetsCount int
+	var totalAssetsCount int
 
 	u, err := url.Parse(a.requestConfig.ImmichURL)
 	if err != nil {
-		_, _, err = immichAPIFail(allAssetsCount, err, nil, "")
-		return allAssetsCount, err
+		_, _, err = immichAPIFail(totalAssetsCount, err, nil, "")
+		return totalAssetsCount, err
 	}
 
 	requestBody := SearchRandomBody{
@@ -90,15 +90,25 @@ func (a *Asset) AssetsWithTagCount(tagID string, requestID, deviceID string) (in
 		Size:       a.requestConfig.Kiosk.FetchedAssetsSize,
 	}
 
+	// Include videos if show videos is enabled
+	if a.requestConfig.ShowVideos {
+		requestBody.Type = ""
+	}
+
 	if a.requestConfig.ShowArchived {
 		requestBody.WithArchived = true
 	}
 
 	DateFilter(&requestBody, a.requestConfig.DateFilter)
 
-	allAssetsCount, err = a.fetchPaginatedMetadata(u, requestBody, requestID, deviceID)
+	allAssetsCount, assetsErr := a.fetchPaginatedMetadata(u, requestBody, requestID, deviceID)
+	if assetsErr != nil {
+		return totalAssetsCount, assetsErr
+	}
 
-	return allAssetsCount, err
+	totalAssetsCount += allAssetsCount
+
+	return totalAssetsCount, nil
 }
 
 // AssetsWithTag retrieves assets that have the specified tag from the Immich API.
@@ -120,6 +130,11 @@ func (a *Asset) AssetsWithTag(tagID string, requestID, deviceID string) ([]Asset
 		WithExif:   true,
 		WithPeople: true,
 		Size:       a.requestConfig.Kiosk.FetchedAssetsSize,
+	}
+
+	// Include videos if show videos is enabled
+	if a.requestConfig.ShowVideos {
+		requestBody.Type = ""
 	}
 
 	if a.requestConfig.ShowArchived {
@@ -165,9 +180,9 @@ func (a *Asset) AssetsWithTag(tagID string, requestID, deviceID string) ([]Asset
 func (a *Asset) RandomAssetWithTag(tagID string, requestID, deviceID string, isPrefetch bool) error {
 
 	if isPrefetch {
-		log.Debug(requestID, "PREFETCH", deviceID, "Getting Random image with tag", tagID)
+		log.Debug(requestID, "PREFETCH", deviceID, "Getting Random asset with tag", "ID", tagID)
 	} else {
-		log.Debug(requestID+" Getting Random image with tag", tagID)
+		log.Debug(requestID+" Getting Random asset with tag", "ID", tagID)
 	}
 
 	for range MaxRetries {
@@ -180,7 +195,7 @@ func (a *Asset) RandomAssetWithTag(tagID string, requestID, deviceID string, isP
 		apiCacheKey := cache.APICacheKey(apiURL, deviceID, a.requestConfig.SelectedUser)
 
 		if len(immichAssets) == 0 {
-			log.Debug(requestID + " No images left in cache. Refreshing and trying again")
+			log.Debug(requestID + " No assets left in cache. Refreshing and trying again")
 			cache.Delete(apiCacheKey)
 
 			immichAssetsRetry, _, retryErr := a.AssetsWithTag(tagID, requestID, deviceID)
@@ -188,7 +203,12 @@ func (a *Asset) RandomAssetWithTag(tagID string, requestID, deviceID string, isP
 				return fmt.Errorf("no assets found with tag %s after refresh", tagID)
 			}
 
-			continue
+			immichAssets = immichAssetsRetry
+		}
+
+		wantedAssetType := ImageOnlyAssetTypes
+		if a.requestConfig.ShowVideos {
+			wantedAssetType = AllAssetTypes
 		}
 
 		for immichAssetIndex, asset := range immichAssets {
@@ -197,12 +217,12 @@ func (a *Asset) RandomAssetWithTag(tagID string, requestID, deviceID string, isP
 			asset.requestConfig = a.requestConfig
 			asset.ctx = a.ctx
 
-			if !asset.isValidAsset(requestID, deviceID, ImageOnlyAssetTypes, a.RatioWanted) {
+			if !asset.isValidAsset(requestID, deviceID, wantedAssetType, a.RatioWanted) {
 				continue
 			}
 
 			if a.requestConfig.Kiosk.Cache {
-				// Remove the current image from the slice
+				// Remove the current asset from the slice
 				immichAssetsToCache := slices.Delete(immichAssets, immichAssetIndex, immichAssetIndex+1)
 				jsonBytes, cacheMarshalErr := json.Marshal(immichAssetsToCache)
 				if cacheMarshalErr != nil {
@@ -210,11 +230,8 @@ func (a *Asset) RandomAssetWithTag(tagID string, requestID, deviceID string, isP
 					return cacheMarshalErr
 				}
 
-				// replace cache with used image(s) removed
-				cacheErr := cache.Replace(apiCacheKey, jsonBytes)
-				if cacheErr != nil {
-					log.Debug("Failed to update device cache for tag", "tagID", tagID, "deviceID", deviceID)
-				}
+				// replace cache with used asset(s) removed
+				cache.Set(apiCacheKey, jsonBytes, a.requestConfig.Duration)
 			}
 
 			asset.BucketID = tagID
@@ -224,11 +241,11 @@ func (a *Asset) RandomAssetWithTag(tagID string, requestID, deviceID string, isP
 			return nil
 		}
 
-		log.Debug(requestID + " No viable images left in cache. Refreshing and trying again")
+		log.Debug(requestID + " No viable assets left in cache. Refreshing and trying again")
 		cache.Delete(apiCacheKey)
 	}
 
-	return fmt.Errorf("no images found for '%s'. Max retries reached", tagID)
+	return fmt.Errorf("no assets found for '%s'. Max retries reached", tagID)
 }
 
 func (a *Asset) HasTag(tagID string) bool {
@@ -417,4 +434,47 @@ func (a *Asset) addTagToAsset(tag Tag, assetID string) error {
 // Returns an error if the removal fails.
 func (a *Asset) removeTagFromAsset(tag Tag, assetID string) error {
 	return a.modifyTagAsset(tag, assetID, http.MethodDelete, "remove")
+}
+
+// addRecursiveTags adds all matching child/nested tags to the expandedTags slice.
+func addRecursiveTags(tag string, expandedTags []string, allTags Tags) []string {
+	if strings.HasSuffix(tag, "/**") || strings.HasSuffix(tag, "/*") {
+		for _, t := range allTags {
+			if matchesTagPattern(t.Value, tag) && !slices.Contains(expandedTags, t.Value) {
+				expandedTags = append(expandedTags, t.Value)
+			}
+		}
+	}
+
+	return expandedTags
+}
+
+// ExpandTagPatterns expands tag patterns to include all matching tags and removes patterns from the expanded tags.
+//
+// Examples:
+//
+// []string{"parent/*"} -> []string{"parent/child"}
+// []string{"parent/**"} -> []string{"parent/child", "parent/child/grandchild"}
+func (a *Asset) ExpandTagPatterns(tags []string, requestID, deviceID string) []string {
+	if len(tags) == 0 {
+		return tags
+	}
+
+	allTags, _, err := a.AllTags(requestID, deviceID)
+	if err != nil {
+		log.Error("error fetching all tags", "error", err)
+		return tags
+	}
+
+	expandedTags := make([]string, len(tags))
+	copy(expandedTags, tags)
+
+	for _, tag := range tags {
+		expandedTags = addRecursiveTags(tag, expandedTags, allTags)
+	}
+
+	// remove patterns from expanded tags
+	return slices.DeleteFunc(expandedTags, func(tag string) bool {
+		return strings.HasSuffix(tag, "/**") || strings.HasSuffix(tag, "/*")
+	})
 }

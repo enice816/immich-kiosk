@@ -7,11 +7,12 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/log"
-	"github.com/labstack/echo/v4"
+	"charm.land/log/v2"
+	"github.com/labstack/echo/v5"
 
 	"github.com/damongolding/immich-kiosk/internal/common"
 	"github.com/damongolding/immich-kiosk/internal/config"
+	"github.com/damongolding/immich-kiosk/internal/i18n"
 	"github.com/damongolding/immich-kiosk/internal/immich"
 	"github.com/damongolding/immich-kiosk/internal/kiosk"
 	imageComponent "github.com/damongolding/immich-kiosk/internal/templates/components/image"
@@ -25,7 +26,7 @@ import (
 // NewAsset returns an echo.HandlerFunc that handles requests for new assets.
 // It manages image processing, caching, and prefetching based on the configuration.
 func NewAsset(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		requestData, err := InitializeRequestData(c, baseConfig)
 		if err != nil {
@@ -73,7 +74,8 @@ func NewAsset(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
 
 		viewData, err := generateViewData(requestConfig, requestCtx, requestID, deviceID, false)
 		if err != nil {
-			return RenderError(c, err, "retrieving asset", requestConfig.Duration)
+			t := i18n.T()
+			return RenderError(c, err, t("retrieving_asset"), requestConfig.Duration)
 		}
 
 		if requestConfig.Kiosk.PreFetch {
@@ -82,7 +84,7 @@ func NewAsset(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
 
 		go webhooks.Trigger(com.Context(), requestData, KioskVersion, webhooks.NewAsset, viewData)
 
-		if len(viewData.Assets) > 0 && requestConfig.AlbumVideo && viewData.Assets[0].ImmichAsset.Type == immich.VideoType {
+		if len(viewData.Assets) > 0 && requestConfig.ShowVideos && viewData.Assets[0].ImmichAsset.Type == immich.VideoType {
 			return Render(c, http.StatusOK, videoComponent.Video(viewData, com.Secret()))
 		}
 
@@ -94,7 +96,7 @@ func NewAsset(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
 // Image returns an echo.HandlerFunc that handles requests for raw images.
 // It processes the image without any additional transformations and returns it as a blob.
 func Image(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		requestData, err := InitializeRequestData(c, baseConfig)
 		if err != nil {
@@ -109,6 +111,11 @@ func Image(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
 		requestConfig := requestData.RequestConfig
 		requestID := requestData.RequestID
 
+		requestConfig.ShowVideos = false
+		requestConfig.LivePhotos = false
+
+		layout := strings.ToLower(strings.TrimSpace(c.QueryParam("layout")))
+
 		log.Debug(
 			requestID,
 			"method", c.Request().Method,
@@ -118,9 +125,27 @@ func Image(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
 
 		immichAsset := immich.New(com.Context(), requestConfig)
 
-		img, err := processAsset(&immichAsset, immich.ImageOnlyAssetTypes, requestConfig, requestID, "", "", false)
+		switch layout {
+		case kiosk.PortraitOrientation:
+			immichAsset.RatioWanted = immich.PortraitOrientation
+		case kiosk.LandscapeOrientation:
+			immichAsset.RatioWanted = immich.LandscapeOrientation
+		default:
+		}
+
+		fakeDeviceID := requestID
+
+		img, err := processAsset(&immichAsset, requestConfig, requestID, fakeDeviceID, "", false)
 		if err != nil {
 			return err
+		}
+
+		// Optimize image if wanted
+		if requestConfig.OptimizeImages && requestConfig.ClientData.Width > 0 && requestConfig.ClientData.Height > 0 {
+			img, err = utils.OptimizeImage(img, requestConfig.ClientData.Width, requestConfig.ClientData.Height)
+			if err != nil {
+				return err
+			}
 		}
 
 		imgBytes, err := utils.ImageToBytes(img)
@@ -128,12 +153,12 @@ func Image(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
 			return err
 		}
 
-		return c.Blob(http.StatusOK, "image/jpeg", imgBytes)
+		return c.Blob(http.StatusOK, kiosk.MimeTypeJpeg, imgBytes)
 	}
 }
 
 func ImageWithReload(baseConfig *config.Config) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		requestData, err := InitializeRequestData(c, baseConfig)
 		if err != nil {
@@ -164,7 +189,7 @@ func ImageWithReload(baseConfig *config.Config) echo.HandlerFunc {
 // ImageWithID handles HTTP requests to retrieve an image preview by its image ID and returns the image as a blob with the correct MIME type.
 // Returns HTTP 400 if the image ID is missing or if the image cannot be retrieved.
 func ImageWithID(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		requestData, err := InitializeRequestData(c, baseConfig)
 		if err != nil {
@@ -211,7 +236,7 @@ func ImageWithID(baseConfig *config.Config, com *common.Common) echo.HandlerFunc
 // It validates the asset ID and tag name parameters, then adds the specified tag to the asset.
 // Returns HTTP 200 on success or appropriate error codes if validation fails or tag addition fails.
 func TagAsset(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		requestData, err := InitializeRequestData(c, baseConfig)
 		if err != nil {
@@ -280,7 +305,7 @@ func TagAsset(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
 //   - HTTP 500 if favorite/album operations fail
 //   - Fresh like button HTML is returned regardless of success/failure
 func LikeAsset(baseConfig *config.Config, com *common.Common, setAssetAsLiked bool) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		requestData, err := InitializeRequestData(c, baseConfig)
 		if err != nil {
@@ -298,6 +323,10 @@ func LikeAsset(baseConfig *config.Config, com *common.Common, setAssetAsLiked bo
 		)
 
 		assetID := c.FormValue("assetID")
+		user := strings.TrimSpace(c.FormValue("user"))
+		if user != "" {
+			requestConfig.SelectedUser = user
+		}
 
 		if assetID == "" {
 			log.Error("Asset ID is required")
@@ -305,7 +334,7 @@ func LikeAsset(baseConfig *config.Config, com *common.Common, setAssetAsLiked bo
 		}
 
 		if baseConfig.Kiosk.DemoMode {
-			return Render(c, http.StatusOK, partials.LikeButton(assetID, true, true, true, com.Secret()))
+			return Render(c, http.StatusOK, partials.LikeButton(assetID, user, true, true, true, com.Secret()))
 		}
 
 		immichAsset := immich.New(com.Context(), requestConfig)
@@ -347,10 +376,10 @@ func LikeAsset(baseConfig *config.Config, com *common.Common, setAssetAsLiked bo
 
 		// handle error
 		if eg != nil {
-			return Render(c, http.StatusInternalServerError, partials.LikeButton(assetID, !setAssetAsLiked, false, true, com.Secret()))
+			return Render(c, http.StatusInternalServerError, partials.LikeButton(assetID, user, !setAssetAsLiked, false, true, com.Secret()))
 		}
 
-		return Render(c, http.StatusOK, partials.LikeButton(assetID, setAssetAsLiked, setAssetAsLiked, true, com.Secret()))
+		return Render(c, http.StatusOK, partials.LikeButton(assetID, user, setAssetAsLiked, setAssetAsLiked, true, com.Secret()))
 	}
 }
 
@@ -367,7 +396,7 @@ func LikeAsset(baseConfig *config.Config, com *common.Common, setAssetAsLiked bo
 //   - HTTP 400 if asset ID or tag name is missing
 //   - HTTP 500 if tag addition/removal fails
 func HideAsset(baseConfig *config.Config, com *common.Common, hideAsset bool) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		requestData, err := InitializeRequestData(c, baseConfig)
 		if err != nil {
@@ -386,6 +415,10 @@ func HideAsset(baseConfig *config.Config, com *common.Common, hideAsset bool) ec
 
 		assetID := c.FormValue("assetID")
 		tagName := c.FormValue("tagName")
+		user := strings.TrimSpace(c.FormValue("user"))
+		if user != "" {
+			requestConfig.SelectedUser = user
+		}
 
 		if assetID == "" {
 			log.Error("Asset ID is required")
@@ -398,7 +431,7 @@ func HideAsset(baseConfig *config.Config, com *common.Common, hideAsset bool) ec
 		}
 
 		if baseConfig.Kiosk.DemoMode {
-			return Render(c, http.StatusOK, partials.HideButton(assetID, !hideAsset, true, com.Secret()))
+			return Render(c, http.StatusOK, partials.HideButton(assetID, user, !hideAsset, true, com.Secret()))
 		}
 
 		immichAsset := immich.New(com.Context(), requestConfig)
@@ -441,9 +474,9 @@ func HideAsset(baseConfig *config.Config, com *common.Common, hideAsset bool) ec
 		}
 
 		if eg != nil {
-			return Render(c, http.StatusOK, partials.HideButton(assetID, !hideAsset, true, com.Secret()))
+			return Render(c, http.StatusOK, partials.HideButton(assetID, user, !hideAsset, true, com.Secret()))
 		}
 
-		return Render(c, http.StatusOK, partials.HideButton(assetID, hideAsset, true, com.Secret()))
+		return Render(c, http.StatusOK, partials.HideButton(assetID, user, hideAsset, true, com.Secret()))
 	}
 }

@@ -5,11 +5,12 @@ tmp_dir = "tmp"
 [build]
 args_bin = []
 bin = "./dist/kiosk"
-full_bin = "KIOSK_DEBUG=true ./dist/kiosk"
+full_bin = "KIOSK_LOG_LEVEL=debug ./dist/kiosk"
 cmd = "task build"
 delay = 1000
 exclude_dir = [
     "assets",
+    "frontend/public/assets",
     "tmp",
     "vendor",
     "testdata",
@@ -21,8 +22,8 @@ exclude_regex = ["_test.go", "internal/templates/.*\\.go$"]
 exclude_unchanged = false
 follow_symlink = false
 include_dir = []
-include_ext = ["go", "tpl", "tmpl", "templ", "html"]
-include_file = []
+include_ext = ["go", "tpl", "tmpl", "templ", "html", "css", "ts"]
+include_file = ["config.yaml"]
 kill_delay = "1s"
 log = "build-errors.log"
 poll = false

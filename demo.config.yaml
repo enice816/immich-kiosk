@@ -22,8 +22,9 @@ transition: cross-fade # cross-fade, fade or none
 show_progress_bar: true # display a progress bar
 image_fit: cover # how the image fits the screen. Options are none, contain and cover
 image_effect: smart-zoom
+image_effect_amount: 200
 
-albums: 75c4860f-d31c-4dac-9831-0e67c7ab7668
+albums: f9695ff6-2140-49e7-9d0d-56ab8402f514
 
 ## Image METADATA
 show_album_name: true
@@ -41,13 +42,37 @@ show_more_info_image_link: true
 show_more_info_qr_code: true
 
 weather:
-  - name: London
-    lat: 51.5285262
-    lon: -0.2663999
-    api: ""
-    unit: metric
-    lang: en
-    default: true
+  rotation_interval: 10 # in seconds
+  locations:
+    - name: London
+      lat: 51.5285262
+      lon: -0.2663999
+      api: ""
+      unit: metric
+      lang: en
+      default: true
+
+    - name: New York
+      lat: 40.7858335
+      lon: -73.9883068
+      api: ""
+      unit: imperial
+      lang: en
+      default: false
+      show:
+        humidity: true
+        wind: true
+        visibility: true
+
+    - name: Tokyo
+      lat: 35.6895
+      lon: 139.6917
+      api: ""
+      unit: metric
+      lang: en
+      default: false
+      show:
+        humidity: true
 
 use_offline_mode: true
 
@@ -60,14 +85,16 @@ offline_mode:
 kiosk:
   port: 3000
 
+  disable_config_endpoint: true
+
   http_timeout: -1
 
   redirects:
     - name: curated
-      url: /
+      url: /?weather=rotate
 
     - name: all
-      url: /?album=none&use_offline_mode=false
+      url: /?album=none&use_offline_mode=false&image_effect_amount=200
 
     - name: simple
       url: /?image_effect=none&layout=single&image_fit=contain&transition=none&disable_ui=true&show_more_info=false&use_offline_mode=false

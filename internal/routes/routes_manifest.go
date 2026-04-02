@@ -5,8 +5,9 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/charmbracelet/log"
-	"github.com/labstack/echo/v4"
+	"charm.land/log/v2"
+	"github.com/damongolding/immich-kiosk/internal/kiosk"
+	"github.com/labstack/echo/v5"
 )
 
 // ManifestJSON represents the JSON structure for a web app manifest
@@ -32,7 +33,7 @@ type ManifestIcons struct {
 // Manifest generates and returns a web app manifest JSON response
 // based on the request referer URL. It sets appropriate headers
 // and formats the manifest data according to the Web App Manifest spec.
-func Manifest(c echo.Context) error {
+func Manifest(c *echo.Context) error {
 	refererURL := c.Request().Referer()
 	if refererURL == "" {
 		refererURL = "/"
@@ -57,12 +58,12 @@ func Manifest(c echo.Context) error {
 			{
 				Src:   "/assets/images/android-chrome-192x192.png",
 				Sizes: "192x192",
-				Type:  "image/png",
+				Type:  kiosk.MimeTypePng,
 			},
 			{
 				Src:   "/assets/images/android-chrome-512x512.png",
 				Sizes: "512x512",
-				Type:  "image/png",
+				Type:  kiosk.MimeTypePng,
 			},
 		},
 	}
