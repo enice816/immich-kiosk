@@ -23,6 +23,9 @@
       ],
       "examples": ["12", "24"]
     },
+    "show_am_pm": {
+      "type": "boolean"
+    },
     "show_date": {
       "type": "boolean"
     },
@@ -43,6 +46,19 @@
     },
     "use_gpu": {
       "type": "boolean"
+    },
+    "burn_in_interval": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "burn_in_duration": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "burn_in_opacity": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
     },
     "show_archived": {
       "type": "boolean"
@@ -70,9 +86,6 @@
         "type": "string"
       },
       "uniqueItems": true
-    },
-    "album_video": {
-      "type": "boolean"
     },
     "album_order": {
       "type": "string"
@@ -105,11 +118,39 @@
       },
       "uniqueItems": true
     },
+    "rating": {
+      "type": "integer",
+      "minimum": -1,
+      "maximum": 5
+    },
+    "excluded_partners": {
+      "type": ["string", "array"],
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
     "memories": {
       "type": "boolean"
     },
+    "past_memory_days": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 365
+    },
+    "memory_weight": {
+      "type": "number"
+    },
     "date_filter": {
       "type": "string"
+    },
+    "show_videos": {
+      "type": "boolean"
+    },
+    "exclude_videos_over": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Exclude videos over X seconds"
     },
     "live_photos": {
       "type": "boolean"
@@ -123,11 +164,27 @@
     "disable_navigation": {
       "type": "boolean"
     },
+    "up_arrow_action": {
+      "type": "string",
+      "enum": ["", "mute", "redirects", "pause", "more-info", "fullscreen"],
+      "description": "Action to perform when the up arrow is triggered"
+    },
+    "down_arrow_action": {
+      "type": "string",
+      "enum": ["", "mute", "redirects", "pause", "more-info", "fullscreen"],
+      "description": "Action to perform when the down arrow is triggered"
+    },
     "disable_ui": {
       "type": "boolean"
     },
     "frameless": {
       "type": "boolean"
+    },
+    "frame_padding": {
+      "type": ["integer", "array"],
+      "items": {
+        "type": "integer"
+      }
     },
     "hide_cursor": {
       "type": "boolean"
@@ -166,10 +223,15 @@
       "type": "string"
     },
     "fade_transition_duration": {
-      "type": "integer"
+      "type": "number",
+      "minimum": 0
     },
     "cross_fade_transition_duration": {
-      "type": "integer"
+      "type": "number",
+      "minimum": 0
+    },
+    "show_clear_cache_button": {
+      "type": "boolean"
     },
     "show_progress_bar": {
       "type": "boolean"
@@ -193,6 +255,9 @@
       "type": "integer"
     },
     "use_original_image": {
+      "type": "boolean"
+    },
+    "show_image_rating": {
       "type": "boolean"
     },
     "show_owner": {
@@ -232,14 +297,32 @@
     "show_image_description": {
       "type": "boolean"
     },
+    "show_image_camera": {
+      "type": "boolean"
+    },
     "show_image_exif": {
       "type": "boolean"
     },
     "show_image_location": {
       "type": "boolean"
     },
-    "show_image_qr": {
-      "type": "boolean"
+    "image_location": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hide_city": {
+          "type": "boolean",
+          "description": "Hide city from the image location display"
+        },
+        "hide_state": {
+          "type": "boolean",
+          "description": "Hide state from the image location display"
+        },
+        "hide_country": {
+          "type": "boolean",
+          "description": "Hide country from the image location display"
+        }
+      }
     },
     "hide_countries": {
       "type": ["string", "array"],
@@ -247,6 +330,9 @@
         "type": "string"
       },
       "uniqueItems": true
+    },
+    "show_image_qr": {
+      "type": "boolean"
     },
     "show_image_id": {
       "type": "boolean"
@@ -274,41 +360,91 @@
       },
       "uniqueItems": true
     },
+    "qr_code_open_in_app": {
+      "type": "boolean",
+      "default": true,
+      "description": "When enabled, QR codes will link to assets via the Immich app (my.immich.app)"
+    },
+    "button_open_in_app": {
+      "type": "boolean",
+      "default": false,
+      "description": "When enabled, image link buttons will open assets via the Immich app (my.immich.app)"
+    },
     "weather": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "lat": {
-            "type": ["number", "string"]
-          },
-          "lon": {
-            "type": ["number", "string"]
-          },
-          "api": {
-            "type": ["string", "null"]
-          },
-          "unit": {
-            "type": "string"
-          },
-          "lang": {
-            "type": "string"
-          },
-          "forecast": {
-            "type": "boolean",
-            "default": false,
-            "description": "Whether to include 3 day forecast data"
-          },
-          "default": {
-            "type": "boolean"
-          }
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rotation_interval": {
+          "type": "integer",
+          "minimum": 10,
+          "default": 60,
+          "description": "The interval in seconds between weather location rotations"
         },
-        "required": ["name", "lat", "lon", "api"]
-      }
+        "locations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "lat": {
+                "type": ["number", "string"]
+              },
+              "lon": {
+                "type": ["number", "string"]
+              },
+              "api": {
+                "type": ["string", "null"]
+              },
+              "unit": {
+                "type": "string"
+              },
+              "lang": {
+                "type": "string"
+              },
+              "round_temperature": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether to round temperature values to the nearest integer"
+              },
+              "forecast": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether to include 3 day forecast data"
+              },
+              "show": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "humidity": {
+                    "type": "boolean",
+                    "description": "Show the current humidity",
+                    "default": false
+                  },
+                  "wind": {
+                    "type": "boolean",
+                    "description": "Show the current wind speed",
+                    "default": false
+                  },
+                  "visibility": {
+                    "type": "boolean",
+                    "description": "Show the current visibility",
+                    "default": false
+                  }
+                }
+              },
+              "default": {
+                "type": "boolean"
+              }
+            },
+            "required": ["name", "lat", "lon"]
+          }
+        }
+      },
+      "required": ["locations"]
     },
     "webhooks": {
       "type": "array",
@@ -321,6 +457,9 @@
             "format": "uri"
           },
           "event": {
+            "type": "string"
+          },
+          "secret": {
             "type": "string"
           }
         },
@@ -350,13 +489,6 @@
         }
       },
       "required": []
-    },
-    "user": {
-      "type": ["string", "array"],
-      "items": {
-        "type": "string"
-      },
-      "uniqueItems": true
     },
     "show_user": {
       "type": "boolean"
@@ -439,6 +571,9 @@
         "disable_config_endpoint": {
           "type": "boolean"
         },
+        "enable_url_builder": {
+          "type": "boolean"
+        },
         "redirects": {
           "type": "array",
           "items": {
@@ -460,6 +595,12 @@
         },
         "demo_mode": {
           "type": "boolean"
+        },
+        "allowed_origins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": []

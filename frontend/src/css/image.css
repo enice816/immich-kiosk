@@ -8,6 +8,13 @@
     padding: 1rem;
     justify-content: space-between;
     align-items: flex-end;
+
+    transition: opacity var(--burn-in-fade) ease-in-out;
+    opacity: 1;
+}
+
+.burn-in-dim .asset-metadata-container {
+    opacity: var(--burn-in-opacity);
 }
 
 .asset-metadata-qr img {
@@ -99,6 +106,11 @@
 .asset--metadata--exif--seperator {
     opacity: 0.3;
     padding: 0 0.5rem;
+}
+
+.asset--metadata--rating-stars {
+    width: 100%;
+    gap: 0.3rem;
 }
 
 .frame--layout-splitview:nth-child(2) {

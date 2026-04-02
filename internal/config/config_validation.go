@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/log"
+	"charm.land/log/v2"
 	"github.com/damongolding/immich-kiosk/internal/kiosk"
 	"github.com/xeipuuv/gojsonschema"
 )
@@ -81,6 +82,91 @@ func (c *Config) checkLowercaseTaggedFields() {
 	}
 }
 
+// loadSecretFromFile attempts to read and return a secret from the specified file
+func loadSecretFromFile(filePath string) (string, bool) {
+	data, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			log.Warn("Secret file not found", "file", filePath)
+		} else {
+			log.Error("Failed to read secret file", "file", filePath, "error", readErr)
+		}
+		return "", false
+	}
+
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		log.Warn("Secret file is empty", "file", filePath)
+		return "", false
+	}
+
+	return value, true
+}
+
+func (c *Config) checkSecrets() {
+
+	apiKeyFile := os.Getenv(apiKeyFileEnv)
+	if apiKeyFile != "" {
+		apiKeyFile = filepath.Clean(apiKeyFile)
+		if apiKey, ok := loadSecretFromFile(apiKeyFile); ok {
+			log.Info("Loaded Immich API key", "source", "docker secret")
+			c.ImmichAPIKey = apiKey
+		}
+	}
+
+	passwordFile := os.Getenv(passwordFileEnv)
+	if passwordFile != "" {
+		passwordFile = filepath.Clean(passwordFile)
+		if password, ok := loadSecretFromFile(passwordFile); ok {
+			log.Info("Loaded password", "source", "docker secret")
+			c.Kiosk.Password = password
+		}
+	}
+
+	weatherAPIFile := os.Getenv(weatherAPIKeyFileEnv)
+	if weatherAPIFile != "" {
+		weatherAPIFile = filepath.Clean(weatherAPIFile)
+		if weatherAPIKey, ok := loadSecretFromFile(weatherAPIFile); ok {
+			log.Info("Loaded weather API key", "source", "docker secret")
+			for i, location := range c.Weather.Locations {
+				if location.API == "" {
+					log.Info("Added weather API key to", "location", location.Name)
+					c.Weather.Locations[i].API = weatherAPIKey
+				}
+			}
+		}
+	}
+
+	credsDir := os.Getenv(systemdCredDirEnv)
+	if credsDir == "" {
+		// Not using systemD creds
+		return
+	}
+
+	systemdAPIFile := filepath.Clean(filepath.Join(credsDir, systemdCredAPIKeyFileEnv))
+	if apiKey, ok := loadSecretFromFile(systemdAPIFile); ok {
+		log.Info("Loaded Immich API key", "source", "systemd credential")
+		c.ImmichAPIKey = apiKey
+	}
+
+	systemdPasswordFile := filepath.Clean(filepath.Join(credsDir, systemdCredPasswordFileEnv))
+	if password, ok := loadSecretFromFile(systemdPasswordFile); ok {
+		log.Info("Loaded password", "source", "systemd credential")
+		c.Kiosk.Password = password
+	}
+
+	systemdWeatherAPIFile := filepath.Clean(filepath.Join(credsDir, systemdCredWeatherAPIKeyFileEnv))
+	if weatherAPIKey, ok := loadSecretFromFile(systemdWeatherAPIFile); ok {
+		log.Info("Loaded weather API key", "source", "systemd credential")
+		for i, location := range c.Weather.Locations {
+			if location.API == "" {
+				log.Info("Added weather API key to", "location", location.Name)
+				c.Weather.Locations[i].API = weatherAPIKey
+			}
+		}
+	}
+}
+
 // checkRequiredFields verifies that all required configuration fields are set.
 // Currently checks for:
 // - ImmichUrl: The base URL for the Immich server
@@ -144,6 +230,8 @@ func (c *Config) checkAssetBuckets() {
 	c.ExcludedTags = c.cleanupSlice(c.ExcludedTags, "TAG_VALUE")
 
 	c.Dates = c.cleanupSlice(c.Dates, "DATE_RANGE", "YYYY-MM-DD_to_YYYY-MM-DD")
+
+	c.ExcludedPartners = c.cleanupSlice(c.ExcludedPartners, "PARTNER_ID")
 }
 
 // checkExcludedAlbums filters out any albums from c.Album that are present in
@@ -178,13 +266,51 @@ func (c *Config) checkExcludedAlbums() {
 	}
 }
 
+func (c *Config) checkTags() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(c.Tags) == 0 {
+		return
+	}
+
+	for i := range c.Tags {
+		t, err := url.QueryUnescape(c.Tags[i])
+		if err != nil {
+			log.Error("Failed to unescape", "tag", c.Tags[i])
+			continue
+		}
+
+		c.Tags[i] = t
+	}
+}
+
+func (c *Config) checkExcludedTags() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(c.ExcludedTags) == 0 {
+		return
+	}
+
+	for i := range c.ExcludedTags {
+		t, err := url.QueryUnescape(c.ExcludedTags[i])
+		if err != nil {
+			log.Error("Failed to unescape", "tag", c.ExcludedTags[i])
+			continue
+		}
+
+		c.ExcludedTags[i] = t
+	}
+}
+
 // checkWeatherLocations validates the WeatherLocations in the Config.
 // It checks each WeatherLocation for required fields (name, latitude, longitude, and API key),
 // and logs an error message if any required fields are missing.
 func (c *Config) checkWeatherLocations() {
 	var validLocations []WeatherLocation
 
-	for _, w := range c.WeatherLocations {
+	for _, w := range c.Weather.Locations {
 		missingFields := []string{}
 		if w.Name == "" {
 			missingFields = append(missingFields, "name")
@@ -196,18 +322,14 @@ func (c *Config) checkWeatherLocations() {
 			missingFields = append(missingFields, "longitude")
 		}
 		if w.API == "" {
-			if c.Kiosk.DemoMode && os.Getenv("KIOSK_DEMO_WEATHER_API") != "" {
-				w.API = os.Getenv("KIOSK_DEMO_WEATHER_API")
-			} else {
-				missingFields = append(missingFields, "API key")
-			}
+			missingFields = append(missingFields, "API key")
 		}
 		if w.Default {
-			if c.HasWeatherDefault {
+			if c.Weather.HasDefault {
 				log.Warn("Multiple default weather locations found.")
 				w.Default = false
 			} else {
-				c.HasWeatherDefault = true
+				c.Weather.HasDefault = true
 			}
 		}
 		if len(missingFields) == 0 {
@@ -218,7 +340,14 @@ func (c *Config) checkWeatherLocations() {
 		}
 	}
 
-	c.WeatherLocations = validLocations
+	c.Weather.Locations = validLocations
+}
+
+func (c *Config) checkWeatherRotationInterval() {
+	if c.Weather.RotationInterval != 0 && c.Weather.RotationInterval < 10 {
+		log.Warn("Weather rotation_interval too low, setting to minimum", "value", c.Weather.RotationInterval)
+		c.Weather.RotationInterval = 10
+	}
 }
 
 // checkHideCountries processes the list of countries to hide in location information
@@ -442,6 +571,29 @@ func checkSchema(config map[string]any, level string) bool {
 	return true
 }
 
+// checkBurnIn validates burn-in prevention configuration values
+func (c *Config) checkBurnIn() {
+	if c.BurnInOpacity < 0 || c.BurnInOpacity > 100 {
+		log.Warn("BurnInOpacity must be between 0 and 100, using default", "value", c.BurnInOpacity)
+		c.BurnInOpacity = 70
+	}
+	if c.BurnInDuration < 1 {
+		log.Warn("BurnInDuration must be at least 1 second, using default", "value", c.BurnInDuration)
+		c.BurnInDuration = 30
+	}
+	if c.BurnInInterval < 0 {
+		log.Warn("BurnInInterval cannot be negative, disabling", "value", c.BurnInInterval)
+		c.BurnInInterval = 0
+	}
+}
+
+func (c *Config) checkUsersAPIKeys() {
+	if c.ImmichUsersAPIKeys == nil {
+		c.ImmichUsersAPIKeys = make(map[string]string)
+	}
+	c.ImmichUsersAPIKeys["default"] = c.ImmichAPIKey
+}
+
 func ConfigTypes(settings map[string]any, cfgStruct any) map[string]any {
 	return convertConfigTypes(reflect.TypeOf(cfgStruct), settings)
 }
@@ -454,8 +606,7 @@ func convertConfigTypes(typ reflect.Type, settings map[string]any) map[string]an
 		typ = typ.Elem()
 	}
 
-	for i := range typ.NumField() {
-		field := typ.Field(i)
+	for field := range typ.Fields() {
 		tag := field.Tag.Get("mapstructure")
 		if tag == "" {
 			tag = field.Name
@@ -520,4 +671,11 @@ func convertConfigTypes(typ reflect.Type, settings map[string]any) map[string]an
 	}
 
 	return result
+}
+
+func (c *Config) checkRating() {
+	if c.Rating < -1 || c.Rating > 5 {
+		log.Warn("Rating must be -1 (disabled) or 0–5; disabling rating", "value", c.Rating)
+		c.Rating = -1
+	}
 }

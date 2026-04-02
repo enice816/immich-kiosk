@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/log"
+	"charm.land/log/v2"
 	"github.com/damongolding/immich-kiosk/internal/common"
 	"github.com/damongolding/immich-kiosk/internal/config"
 	"github.com/damongolding/immich-kiosk/internal/immich"
@@ -28,6 +28,7 @@ const (
 	PreviousHistoryAsset WebhookEvent = "asset.history.previous"
 	PrefetchAsset        WebhookEvent = "asset.prefetch"
 	CacheFlush           WebhookEvent = "cache.flush"
+
 	// UserInteractionClick          WebhookEvent = "user.interaction.click"
 	UserWebhookTriggerInfoOverlay WebhookEvent = "user.webhook.trigger.info_overlay"
 	UserLikeInfoOverlay           WebhookEvent = "user.like.info_overlay"
@@ -35,6 +36,11 @@ const (
 	UserHideInfoOverlay           WebhookEvent = "user.hide.info_overlay"
 	UserUnhideInfoOverlay         WebhookEvent = "user.unhide.info_overlay"
 	UserNavigationCustom          WebhookEvent = "user.navigation.custom"
+
+	// Offline mode
+	NewOfflineAsset             WebhookEvent = "asset.offline.new"
+	NextHistoryOfflineAsset     WebhookEvent = "asset.offline.history.next"
+	PreviousHistoryOfflineAsset WebhookEvent = "asset.offline.history.previous"
 )
 
 type Meta struct {

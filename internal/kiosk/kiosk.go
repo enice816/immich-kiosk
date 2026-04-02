@@ -1,8 +1,13 @@
+// kiosk constants
 package kiosk
+
+import "charm.land/lipgloss/v2"
 
 type Source string
 
 const (
+	GlobalCache = "kiosk-cache"
+
 	ConfigValidationWarning string = "warning"
 	ConfigValidationError   string = "error"
 	ConfigValidationOff     string = "off"
@@ -20,6 +25,7 @@ const (
 	SourcePerson    Source = "PERSON"
 	SourceRandom    Source = "RANDOM"
 	SourceTag       Source = "TAG"
+	SourceRating    Source = "RATING"
 	SourceMemories  Source = "MEMORIES"
 
 	LayoutLandscape          string = "landscape"
@@ -50,4 +56,27 @@ const (
 	ThemeSolid  string = "solid"
 	ThemeBubble string = "bubble"
 	ThemeBlur   string = "blur"
+
+	Client string = "client"
+	Server string = "server"
+
+	MimeTypeJpeg string = "image/jpeg"
+	MimeTypeJpg  string = "image/jpg"
+	MimeTypePng  string = "image/png"
+	MimeTypeGif  string = "image/gif"
+	MimeTypeWebp string = "image/webp"
+	MimeTypeAvif string = "image/avif" // currently unsupported
+	MimeTypeBmp  string = "image/bmp"  // currently unsupported
+)
+
+var (
+	SupportedImageMimeTypes = []string{
+		MimeTypeJpeg,
+		MimeTypeJpg,
+		MimeTypePng,
+		MimeTypeGif,
+		MimeTypeWebp,
+	}
+
+	DebugID = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#1ed2bb")).Render("KIOSK")
 )

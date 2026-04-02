@@ -1,3 +1,4 @@
+import { formatRFC3339 } from "date-fns/formatRFC3339";
 import DOMPurify from "dompurify";
 import htmx from "htmx.org";
 import type { TimeFormat } from "./clock";
@@ -29,6 +30,7 @@ import {
 } from "./polling";
 import { sleepMode } from "./sleep";
 import { preventSleep } from "./wakelock";
+import { weatherRotationPosition } from "./weather";
 
 ("use strict");
 
@@ -42,6 +44,14 @@ interface HTMXEvent extends Event {
             requestPath: string;
         };
     };
+}
+
+enum customKeyboardActions {
+    MUTE = "mute",
+    REDIRECTS = "redirects",
+    PAUSE = "pause",
+    MORE_INFO = "more-info",
+    FULLSCREEN = "fullscreen",
 }
 
 /**
@@ -60,13 +70,18 @@ type KioskData = {
     dateFormat: string;
     showTime: boolean;
     timeFormat: TimeFormat;
+    showAmPm: boolean;
     clockSource: "client" | "server";
     transition: string;
     showMoreInfo: boolean;
     showRedirects: boolean;
     livePhotos: boolean;
-    LivePhotoLoopDelay: number;
+    livePhotoLoopDelay: number;
+    burnInInterval: number;
+    burnInDuration: number;
     httpTimeout: number;
+    upArrowAction: string;
+    downArrowAction: string;
 };
 
 const MAX_FRAMES: number = 2 as const;
@@ -116,6 +131,8 @@ const offlineSVG = htmx.find("#offline") as HTMLElement | null;
 
 let requestInFlight = false;
 
+let burnInTimerId: number | null = null;
+
 /**
  * Initialize Kiosk functionality
  * @description Sets up kiosk by configuring:
@@ -155,6 +172,7 @@ async function init(): Promise<void> {
             kioskData.dateFormat,
             kioskData.showTime,
             kioskData.timeFormat,
+            kioskData.showAmPm,
             kioskData.langCode,
         );
     }
@@ -196,7 +214,34 @@ async function init(): Promise<void> {
 
     addEventListeners();
 
-    if (kioskData.livePhotos) livePhoto(kioskData.LivePhotoLoopDelay);
+    if (kioskData.livePhotos) livePhoto(kioskData.livePhotoLoopDelay);
+
+    // Burn-in prevention
+    if (kioskData.burnInInterval > 0 && kioskData.burnInDuration > 0)
+        burnInCycle();
+}
+
+function burnInCycle() {
+    if (burnInTimerId !== null) {
+        clearTimeout(burnInTimerId);
+        burnInTimerId = null;
+    }
+    const runBurnInCycle = () => {
+        document.body.classList.add("burn-in-dim");
+        console.debug("Burn-in cycle started");
+
+        setTimeout(() => {
+            document.body.classList.remove("burn-in-dim");
+            console.debug("Burn-in cycle ended");
+
+            burnInTimerId = setTimeout(
+                runBurnInCycle,
+                kioskData.burnInInterval * 1000,
+            );
+        }, kioskData.burnInDuration * 1000);
+    };
+
+    burnInTimerId = setTimeout(runBurnInCycle, kioskData.burnInInterval * 1000);
 }
 
 /**
@@ -248,6 +293,61 @@ function handleInfoKeyPress(): void {
  */
 function handleRedirectsKeyPress(): void {
     handleOverlayToggle("redirects-open", toggleRedirectsOverlay);
+}
+
+function keyboardActionPause(e: KeyboardEvent): void {
+    e.preventDefault();
+    togglePolling(true);
+}
+
+function keyboardActionInfo(e: KeyboardEvent): void {
+    if (!kioskData.showMoreInfo) return;
+    if (e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    handleInfoKeyPress();
+}
+
+function keyboardActionRedirects(e: KeyboardEvent): void {
+    if (!kioskData.showRedirects) return;
+    if (e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    handleRedirectsKeyPress();
+}
+
+function keyboardActionMute(e: KeyboardEvent): void {
+    if (!toggleMuteMenuButton) return;
+    e.preventDefault();
+    toggleMute();
+}
+
+function keyboardActionFullscreen(e: KeyboardEvent): void {
+    e.preventDefault();
+    handleFullscreenClick();
+}
+
+function handleCustomKeyboardAction(
+    e: KeyboardEvent,
+    customKeyboardAction: string,
+): void {
+    switch (customKeyboardAction) {
+        case customKeyboardActions.MUTE:
+            keyboardActionMute(e);
+            break;
+        case customKeyboardActions.REDIRECTS:
+            keyboardActionRedirects(e);
+            break;
+        case customKeyboardActions.PAUSE:
+            keyboardActionPause(e);
+            break;
+        case customKeyboardActions.MORE_INFO:
+            keyboardActionInfo(e);
+            break;
+        case customKeyboardActions.FULLSCREEN:
+            keyboardActionFullscreen(e);
+            break;
+        default:
+            break;
+    }
 }
 
 /**
@@ -335,23 +435,22 @@ function addEventListeners(): void {
                 break;
 
             case "KeyI":
-                if (!kioskData.showMoreInfo) return;
-                if (e.ctrlKey || e.metaKey) return;
-                e.preventDefault();
-                handleInfoKeyPress();
+                keyboardActionInfo(e);
                 break;
 
             case "KeyR":
-                if (!kioskData.showRedirects) return;
-                if (e.ctrlKey || e.metaKey) return;
-                e.preventDefault();
-                handleRedirectsKeyPress();
+                keyboardActionRedirects(e);
                 break;
 
             case "KeyM":
-                if (!toggleMuteMenuButton) return;
-                e.preventDefault();
-                toggleMute();
+                keyboardActionMute(e);
+                break;
+
+            case "ArrowUp":
+                handleCustomKeyboardAction(e, kioskData.upArrowAction);
+                break;
+            case "ArrowDown":
+                handleCustomKeyboardAction(e, kioskData.downArrowAction);
                 break;
         }
     });
@@ -472,6 +571,7 @@ function checkHistoryExists(e: HTMXEvent): void {
  * - client_height: Height of the browser viewport in pixels
  */
 type BrowserData = {
+    client_time: string;
     client_width: number;
     client_height: number;
     fully_version?: string;
@@ -490,6 +590,7 @@ type BrowserData = {
  */
 function clientData(): BrowserData {
     const data: BrowserData = {
+        client_time: formatRFC3339(new Date()),
         client_width: fullyKiosk.getDisplayDimensions().width,
         client_height: fullyKiosk.getDisplayDimensions().height,
     };
@@ -551,4 +652,5 @@ export {
     clientData,
     videoHandler,
     sleepMode,
+    weatherRotationPosition,
 };

@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/log"
+	"charm.land/log/v2"
 	"github.com/damongolding/immich-kiosk/internal/kiosk"
 	"github.com/damongolding/immich-kiosk/internal/templates/partials"
 	"github.com/damongolding/immich-kiosk/internal/utils"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // NewVideo returns an HTTP handler for serving video files with support for HTTP range requests, caching headers, and partial content delivery.
@@ -23,14 +23,14 @@ import (
 // Returns 400 if the video ID is missing, 404 if the video is not found, 416 for invalid range requests, and 500 for internal errors.
 func NewVideo(demoMode bool) echo.HandlerFunc {
 	if demoMode {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			return c.String(http.StatusOK, "Demo mode enabled")
 		}
 	}
 
 	const bufferSize = 1024 * 1024 // Increased to 1MB buffer
 
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 		videoID := c.Param("videoID")
 		if videoID == "" {
 			return echo.NewHTTPError(http.StatusBadRequest, "Video ID is required")
@@ -161,14 +161,14 @@ func parseRangeHeader(rangeHeader string, fileSize int64) (int64, int64, int, er
 	}
 
 	statusCode = http.StatusPartialContent
-	ranges := strings.Split(strings.Replace(rangeHeader, "bytes=", "", 1), "-")
-	if len(ranges) != 2 {
+	rangeStart, rangeEnd, ok := strings.Cut(strings.Replace(rangeHeader, "bytes=", "", 1), "-")
+	if !ok {
 		return 0, 0, 0, echo.NewHTTPError(http.StatusBadRequest, "Invalid range format")
 	}
 
 	// Handle empty start range
-	if ranges[0] == "" {
-		end, err = strconv.ParseInt(ranges[1], 10, 64)
+	if rangeStart == "" {
+		end, err = strconv.ParseInt(rangeEnd, 10, 64)
 		if err != nil {
 			return 0, 0, 0, echo.NewHTTPError(http.StatusBadRequest, "Invalid range end")
 		}
@@ -178,16 +178,16 @@ func parseRangeHeader(rangeHeader string, fileSize int64) (int64, int64, int, er
 	}
 
 	// Parse start range
-	start, err = strconv.ParseInt(ranges[0], 10, 64)
+	start, err = strconv.ParseInt(rangeStart, 10, 64)
 	if err != nil {
 		return 0, 0, 0, echo.NewHTTPError(http.StatusBadRequest, "Invalid range start")
 	}
 
 	// Handle empty end range
-	if ranges[1] == "" {
+	if rangeEnd == "" {
 		end = fileSize - 1
 	} else {
-		end, err = strconv.ParseInt(ranges[1], 10, 64)
+		end, err = strconv.ParseInt(rangeEnd, 10, 64)
 		if err != nil {
 			return 0, 0, 0, echo.NewHTTPError(http.StatusBadRequest, "Invalid range end")
 		}
@@ -211,12 +211,12 @@ func parseRangeHeader(rangeHeader string, fileSize int64) (int64, int64, int, er
 
 func LivePhoto(demoMode bool, password string) echo.HandlerFunc {
 	if demoMode {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			return c.NoContent(http.StatusNoContent)
 		}
 	}
 
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		liveID := c.Param("liveID")
 		if liveID == "" {
@@ -233,7 +233,7 @@ func LivePhoto(demoMode bool, password string) echo.HandlerFunc {
 			videoOrientation = kiosk.PortraitOrientation
 		}
 
-		return Render(c, http.StatusOK, partials.LivePhoto(video.ID, videoOrientation, password))
+		return Render(c, http.StatusOK, partials.LivePhoto(video.ID, video.ContentType, videoOrientation, password))
 	}
 
 }

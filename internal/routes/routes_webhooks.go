@@ -6,14 +6,15 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/charmbracelet/log"
+	"charm.land/log/v2"
 	"github.com/damongolding/immich-kiosk/internal/common"
 	"github.com/damongolding/immich-kiosk/internal/config"
+	"github.com/damongolding/immich-kiosk/internal/i18n"
 	"github.com/damongolding/immich-kiosk/internal/immich"
 	"github.com/damongolding/immich-kiosk/internal/kiosk"
 	"github.com/damongolding/immich-kiosk/internal/utils"
 	"github.com/damongolding/immich-kiosk/internal/webhooks"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -21,7 +22,7 @@ import (
 //
 // The handler validates request signatures, timestamps, and payloads, and processes supported webhook events such as user interactions. For relevant events, it retrieves asset information based on the request history and triggers asynchronous webhook actions. Returns appropriate HTTP responses for demo mode, invalid requests, or processing errors.
 func Webhooks(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 
 		if baseConfig.Kiosk.DemoMode {
 			return c.String(http.StatusOK, "Demo mode enabled")
@@ -40,6 +41,10 @@ func Webhooks(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
 		requestConfig := requestData.RequestConfig
 		requestID := requestData.RequestID
 		deviceID := requestData.DeviceID
+
+		if u := strings.TrimSpace(c.FormValue("user")); u != "" {
+			requestConfig.SelectedUser = u
+		}
 
 		receivedSignature := c.Request().Header.Get("X-Signature")
 		receivedTimestamp := c.Request().Header.Get("X-Timestamp")
@@ -101,14 +106,14 @@ func Webhooks(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
 
 			g, _ := errgroup.WithContext(c.Request().Context())
 
-			for i, imageID := range prevImages {
+			for i, id := range prevImages {
 
-				parts := strings.Split(imageID, ":")
-				if len(parts) != 2 {
-					return fmt.Errorf("invalid history entry format: %s", imageID)
+				imageID, _, ok := strings.Cut(id, ":")
+				if !ok {
+					return fmt.Errorf("invalid history entry format: %s", id)
 				}
 
-				currentAssetID := strings.Replace(parts[0], kiosk.HistoryIndicator, "", 1)
+				currentAssetID := strings.Replace(imageID, kiosk.HistoryIndicator, "", 1)
 
 				g.Go(func(currentAssetID string) func() error {
 					return func() error {
@@ -132,7 +137,8 @@ func Webhooks(baseConfig *config.Config, com *common.Common) echo.HandlerFunc {
 			// Wait for all goroutines to complete and check for errors
 			errGroupWait := g.Wait()
 			if errGroupWait != nil {
-				return RenderError(c, errGroupWait, "retrieving image data", requestConfig.Duration)
+				t := i18n.T()
+				return RenderError(c, errGroupWait, t("retrieving_image_data"), requestConfig.Duration)
 			}
 
 			go webhooks.Trigger(com.Context(), requestData, KioskVersion, webhooks.WebhookEvent(kioskWebhookEvent), viewData)

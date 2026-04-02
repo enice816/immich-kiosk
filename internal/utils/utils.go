@@ -12,6 +12,7 @@ import (
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -31,13 +32,12 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/image/webp"
-
+	"charm.land/lipgloss/v2"
+	"charm.land/log/v2"
 	"github.com/EdlinOrg/prominentcolor"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/log"
 	"github.com/damongolding/immich-kiosk/internal/kiosk"
 	"github.com/disintegration/imaging"
+	"golang.org/x/image/webp"
 
 	"github.com/google/uuid"
 
@@ -46,10 +46,27 @@ import (
 
 const (
 
-	// SigmaConstant is used to normalise the blur effect across different image sizes.
+	// sigmaConstant is used to normalise the blur effect across different image sizes.
 	// The value 1300.0 was chosen as it provides consistent blur effects for typical screen resolutions.
-	SigmaConstant = 1300.0
+	sigmaConstant          float64 = 1300.0
+	blurredImageBrightness float64 = -20
+
+	// minMemoryWeight is the minimum weight allowed for memory assets.
+	minMemoryWeight float64 = 0.0001
+
+	// orientation constants
+	orientationUnspecified = 0
+	orientationNormal      = 1
+	orientationFlipH       = 2
+	orientationRotate180   = 3
+	orientationFlipV       = 4
+	orientationTranspose   = 5
+	orientationRotate270   = 6
+	orientationTransverse  = 7
+	orientationRotate90    = 8
 )
+
+type orientation int
 
 // WeightedAsset represents an asset with a type and ID
 type WeightedAsset struct {
@@ -60,8 +77,9 @@ type WeightedAsset struct {
 
 // AssetWithWeighting represents a WeightedAsset with an associated weight value
 type AssetWithWeighting struct {
-	Asset  WeightedAsset
-	Weight int
+	Asset   WeightedAsset
+	Weight  int     // base weight
+	Penalty float64 // penalty for weight. 1.0 = no penalty, 0.5 = 50% penalty.
 }
 
 // GenerateUUID generates a new random UUID string
@@ -118,7 +136,7 @@ func ImageToBytes(img image.Image) ([]byte, error) {
 // It takes a byte slice as input and returns an image.Image and any error encountered.
 // It handles both WebP and other common image formats (JPEG, PNG, GIF) automatically
 // by detecting the MIME type and using the appropriate decoder.
-func BytesToImage(imgBytes []byte) (image.Image, error) {
+func BytesToImage(imgBytes []byte, isOriginal bool) (image.Image, string, error) {
 
 	var img image.Image
 	var err error
@@ -126,21 +144,142 @@ func BytesToImage(imgBytes []byte) (image.Image, error) {
 	imageMime := ImageMimeType(bytes.NewReader(imgBytes))
 
 	switch imageMime {
-	case "image/webp":
+	case kiosk.MimeTypeWebp:
 		img, err = webp.Decode(bytes.NewReader(imgBytes))
-		if err != nil {
-			log.Error("could not decode image", "image mime type", imageMime, "err", err)
-			return nil, err
-		}
 	default:
-		img, err = imaging.Decode(bytes.NewReader(imgBytes))
-		if err != nil {
-			log.Error("could not decode image", "image mime type", imageMime, "err", err)
-			return nil, err
+		img, err = imaging.Decode(bytes.NewReader(imgBytes), imaging.AutoOrientation(false))
+	}
+
+	if err != nil {
+		log.Error("could not decode image", "image mime type", imageMime, "err", err)
+		return nil, imageMime, err
+	}
+
+	if isOriginal {
+		orient := readOrientation(bytes.NewReader(imgBytes))
+		img = ApplyExifOrientation(img, orient)
+	}
+
+	return img, imageMime, nil
+}
+
+func readOrientation(r io.Reader) orientation {
+	const (
+		markerSOI      = 0xffd8
+		markerAPP1     = 0xffe1
+		exifHeader     = 0x45786966
+		byteOrderBE    = 0x4d4d
+		byteOrderLE    = 0x4949
+		orientationTag = 0x0112
+	)
+
+	// Check if JPEG SOI marker is present.
+	var soi uint16
+	if err := binary.Read(r, binary.BigEndian, &soi); err != nil {
+		return orientationUnspecified
+	}
+	if soi != markerSOI {
+		return orientationUnspecified // Missing JPEG SOI marker.
+	}
+
+	// Find JPEG APP1 marker.
+	for {
+		var marker, size uint16
+		if err := binary.Read(r, binary.BigEndian, &marker); err != nil {
+			return orientationUnspecified
+		}
+		if err := binary.Read(r, binary.BigEndian, &size); err != nil {
+			return orientationUnspecified
+		}
+		if marker>>8 != 0xff {
+			return orientationUnspecified // Invalid JPEG marker.
+		}
+		if marker == markerAPP1 {
+			break
+		}
+		if size < 2 {
+			return orientationUnspecified // Invalid block size.
+		}
+		if _, err := io.CopyN(io.Discard, r, int64(size-2)); err != nil {
+			return orientationUnspecified
 		}
 	}
 
-	return img, nil
+	// Check if EXIF header is present.
+	var header uint32
+	if err := binary.Read(r, binary.BigEndian, &header); err != nil {
+		return orientationUnspecified
+	}
+	if header != exifHeader {
+		return orientationUnspecified
+	}
+	if _, err := io.CopyN(io.Discard, r, 2); err != nil {
+		return orientationUnspecified
+	}
+
+	// Read byte order information.
+	var (
+		byteOrderTag uint16
+		byteOrder    binary.ByteOrder
+	)
+	if err := binary.Read(r, binary.BigEndian, &byteOrderTag); err != nil {
+		return orientationUnspecified
+	}
+	switch byteOrderTag {
+	case byteOrderBE:
+		byteOrder = binary.BigEndian
+	case byteOrderLE:
+		byteOrder = binary.LittleEndian
+	default:
+		return orientationUnspecified // Invalid byte order flag.
+	}
+	if _, err := io.CopyN(io.Discard, r, 2); err != nil {
+		return orientationUnspecified
+	}
+
+	// Skip the EXIF offset.
+	var offset uint32
+	if err := binary.Read(r, byteOrder, &offset); err != nil {
+		return orientationUnspecified
+	}
+	if offset < 8 {
+		return orientationUnspecified // Invalid offset value.
+	}
+	if _, err := io.CopyN(io.Discard, r, int64(offset-8)); err != nil {
+		return orientationUnspecified
+	}
+
+	// Read the number of tags.
+	var numTags uint16
+	if err := binary.Read(r, byteOrder, &numTags); err != nil {
+		return orientationUnspecified
+	}
+
+	// Find the orientation tag.
+	for range int(numTags) {
+		var tag uint16
+		if err := binary.Read(r, byteOrder, &tag); err != nil {
+			return orientationUnspecified
+		}
+		if tag != orientationTag {
+			if _, err := io.CopyN(io.Discard, r, 10); err != nil {
+				return orientationUnspecified
+			}
+			continue
+		}
+		if _, err := io.CopyN(io.Discard, r, 6); err != nil {
+			return orientationUnspecified
+		}
+		var val uint16
+		if err := binary.Read(r, byteOrder, &val); err != nil {
+			return orientationUnspecified
+		}
+		if val < 1 || val > 8 {
+			return orientationUnspecified // Invalid tag value.
+		}
+		return orientation(val)
+	}
+	return orientationUnspecified // Missing orientation tag.
 }
 
 // ApplyExifOrientation adjusts an image's orientation based on EXIF data.
@@ -157,57 +296,58 @@ func BytesToImage(imgBytes []byte) (image.Image, error) {
 //	8 = Rotated 90° CW
 //
 // Returns the properly oriented image.
-func ApplyExifOrientation(img image.Image, exifOrientation string) image.Image {
-
+func ApplyExifOrientation(img image.Image, orient orientation) image.Image {
 	if img == nil {
 		return nil
 	}
 
-	o, err := strconv.Atoi(exifOrientation)
-	if err != nil {
-		return img
+	switch orient {
+	case orientationFlipH:
+		img = imaging.FlipH(img)
+	case orientationFlipV:
+		img = imaging.FlipV(img)
+	case orientationRotate90:
+		img = imaging.Rotate90(img)
+	case orientationRotate180:
+		img = imaging.Rotate180(img)
+	case orientationRotate270:
+		img = imaging.Rotate270(img)
+	case orientationTranspose:
+		img = imaging.Transpose(img)
+	case orientationTransverse:
+		img = imaging.Transverse(img)
 	}
 
-	switch o {
-	case 1:
-		return img
-	case 2:
-		return imaging.FlipH(img)
-	case 3:
-		return imaging.Rotate180(img)
-	case 4:
-		return imaging.FlipV(img)
-	case 5:
-		return imaging.Transpose(img)
-	case 6:
-		return imaging.Rotate270(img)
-	case 7:
-		return imaging.Transverse(img)
-	case 8:
-		return imaging.Rotate90(img)
-	default:
-		return img
-	}
+	return img
 }
 
 // ImageToBase64 converts an image.Image to a base64 encoded data URI string with appropriate MIME type
-func ImageToBase64(img image.Image) (string, error) {
+func ImageToBase64(img image.Image, mimeType string) (string, error) {
 
 	var buf bytes.Buffer
 
-	err := imaging.Encode(&buf, img, imaging.JPEG)
-	if err != nil {
-		return "", err
+	switch mimeType {
+	case kiosk.MimeTypePng:
+		err := imaging.Encode(&buf, img, imaging.PNG)
+		if err != nil {
+			return "", err
+		}
+	case kiosk.MimeTypeGif:
+		err := imaging.Encode(&buf, img, imaging.GIF)
+		if err != nil {
+			return "", err
+		}
+	case kiosk.MimeTypeJpeg, kiosk.MimeTypeJpg, "":
+		fallthrough
+	default:
+		mimeType = kiosk.MimeTypeJpeg
+		err := imaging.Encode(&buf, img, imaging.JPEG)
+		if err != nil {
+			return "", err
+		}
 	}
 
-	var base64Encoding string
-
-	mimeType := http.DetectContentType(buf.Bytes())
-
-	base64Encoding += fmt.Sprintf("data:%s;base64,", mimeType)
-
-	base64Encoding += base64.StdEncoding.EncodeToString(buf.Bytes())
-
+	base64Encoding := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(buf.Bytes()))
 	return base64Encoding, nil
 }
 
@@ -254,10 +394,10 @@ func BlurImage(img image.Image, blurrAmount int, isOptimized bool, clientWidth, 
 		blurredImage = imaging.Fit(blurredImage, clientWidth, clientHeight, imaging.Lanczos)
 	}
 
-	sigma := calculateNormalizedSigma(blurrAmount, blurredImage.Bounds().Dx(), blurredImage.Bounds().Dy(), SigmaConstant)
+	sigma := calculateNormalizedSigma(blurrAmount, blurredImage.Bounds().Dx(), blurredImage.Bounds().Dy(), sigmaConstant)
 
 	blurredImage = imaging.Blur(blurredImage, sigma)
-	blurredImage = imaging.AdjustBrightness(blurredImage, -20)
+	blurredImage = imaging.AdjustBrightness(blurredImage, blurredImageBrightness)
 
 	return blurredImage, nil
 }
@@ -334,25 +474,36 @@ func RandomItem[T any](s []T) T {
 	return copySlice[0]
 }
 
-// calculateTotalWeight calculates the sum of logarithmic weights for all assets in the given slice.
-// It uses natural logarithm (base e) and adds 1 to avoid log(0).
-func calculateTotalWeight(assets []AssetWithWeighting) int {
-	total := 0
+func assetWeight(a AssetWithWeighting) float64 {
+
+	weight := max(0, a.Weight)
+
+	// Base logarithmic weight
+	base := math.Log(float64(weight) + 1)
+
+	// Default penalty
+	penalty := a.Penalty
+	if penalty <= 0 {
+		penalty = 1.0
+	}
+
+	final := base * penalty
+
+	// Never allow zero or negative weight
+	final = max(final, minMemoryWeight)
+
+	return final
+}
+
+func calculateTotalWeight(assets []AssetWithWeighting) float64 {
+	total := 0.0
 	for _, asset := range assets {
-		logWeight := int(math.Log(float64(asset.Weight) + 1))
-		if logWeight == 0 {
-			logWeight = 1
-		}
-		total += logWeight
+		total += assetWeight(asset)
 	}
 	return total
 }
 
-// WeightedRandomItem selects a random asset from the given slice of WeightedAsset(s)
-// based on their logarithmic weights. It uses a weighted random selection algorithm.
 func WeightedRandomItem(assets []AssetWithWeighting) WeightedAsset {
-
-	// guards
 	switch len(assets) {
 	case 0:
 		return WeightedAsset{}
@@ -361,23 +512,18 @@ func WeightedRandomItem(assets []AssetWithWeighting) WeightedAsset {
 	}
 
 	totalWeight := calculateTotalWeight(assets)
-	randomWeight := rand.IntN(totalWeight) + 1
+	r := rand.Float64() * totalWeight
 
 	for _, asset := range assets {
-		logWeight := int(math.Log(float64(asset.Weight) + 1))
-		if randomWeight <= logWeight {
+		w := assetWeight(asset)
+		if r < w {
 			return asset.Asset
 		}
-		randomWeight -= logWeight
+		r -= w
 	}
 
-	// WeightedRandomItem sometimes returns an empty WeightedAsset
-	// when the random selection process fails to pick an item.
-	// This is a fallback to ensure we always return a valid asset.
-	if len(assets) > 0 {
-		return assets[0].Asset
-	}
-	return WeightedAsset{}
+	// Should never happen, but keep a safe fallback
+	return assets[0].Asset
 }
 
 // Color represents an RGB color with string representations
@@ -466,18 +612,18 @@ func linearize(value float64) float64 {
 
 // PickRandomImageType selects a random image type based on the given configuration and weightings.
 // It returns a WeightedAsset representing the picked image type.
-func PickRandomImageType(useWeighting bool, peopleAndAlbums []AssetWithWeighting) WeightedAsset {
+func PickRandomImageType(useWeighting bool, assetBuckets []AssetWithWeighting) WeightedAsset {
 
 	var pickedImage WeightedAsset
 
 	if useWeighting {
-		pickedImage = WeightedRandomItem(peopleAndAlbums)
+		pickedImage = WeightedRandomItem(assetBuckets)
 	} else {
-		var assetsOnly []WeightedAsset
-		for _, item := range peopleAndAlbums {
-			assetsOnly = append(assetsOnly, item.Asset)
+		var assetsWithoutWeighting []WeightedAsset
+		for _, item := range assetBuckets {
+			assetsWithoutWeighting = append(assetsWithoutWeighting, item.Asset)
 		}
-		pickedImage = RandomItem(assetsOnly)
+		pickedImage = RandomItem(assetsWithoutWeighting)
 	}
 
 	return pickedImage
@@ -927,4 +1073,31 @@ func ExtractDominantColor(img image.Image) (color.RGBA, error) {
 		B: uint8(colours[0].Color.B),
 		A: 255,
 	}, 0.3), nil
+}
+
+func SanitizeClassName(s string) string {
+
+	allowed := regexp.MustCompile(`[^a-z0-9_/-]+`)
+
+	s = strings.ToLower(strings.TrimSpace(s))
+
+	// replace whitespace with hyphen
+	s = strings.ReplaceAll(s, " ", "-")
+
+	// remove anything NOT in the allowed set
+	s = allowed.ReplaceAllString(s, "")
+
+	// remove trailing and leading hyphens made during joining
+	s = strings.Trim(s, "-")
+
+	return s
+}
+
+func ContainsWholeWord(a, b string) bool {
+	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
+		return false
+	}
+
+	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(a) + `\b`)
+	return re.MatchString(b)
 }

@@ -1,15 +1,17 @@
 package partials
 
 import (
+	"charm.land/log/v2"
 	"context"
 	"fmt"
-	"github.com/charmbracelet/log"
 	"github.com/damongolding/immich-kiosk/internal/common"
+	"github.com/damongolding/immich-kiosk/internal/i18n"
 	"github.com/damongolding/immich-kiosk/internal/immich"
 	"github.com/damongolding/immich-kiosk/internal/kiosk"
 	"github.com/damongolding/immich-kiosk/internal/utils"
 	"github.com/damongolding/immich-kiosk/internal/webhooks"
 
+	"github.com/damongolding/immich-kiosk/internal/config"
 	"github.com/dustin/go-humanize"
 	"io"
 	"net/url"
@@ -25,6 +27,7 @@ import (
 //   - viewData: The view data containing images and display options
 //   - secret: The secret key for generating webhook signatures
 templ RenderMoreInfo(viewData common.ViewData, secret string) {
+	{{ t := i18n.T() }}
 	<div id="more-info" hx-swap-oob="true">
 		for i, img := range viewData.Assets {
 			<div class={ "more-info--image", "more-info--image-"+viewData.MenuPosition }>
@@ -33,6 +36,7 @@ templ RenderMoreInfo(viewData common.ViewData, secret string) {
 						<div class="more-info--button-group">
 							@LikeButton(
 								img.ImmichAsset.ID,
+								img.ImmichAsset.SelectedUser(),
 								img.ImmichAsset.IsFavorite,
 								false,
 								img.ImmichAsset.UserOwnsAsset(viewData.RequestID, viewData.DeviceID),
@@ -40,21 +44,23 @@ templ RenderMoreInfo(viewData common.ViewData, secret string) {
 							)
 							@HideButton(
 								img.ImmichAsset.ID,
+								img.ImmichAsset.SelectedUser(),
 								img.ImmichAsset.HasTag(kiosk.TagSkip),
 								img.ImmichAsset.UserOwnsAsset(viewData.RequestID, viewData.DeviceID),
 								secret,
 							)
 						</div>
 					}
-					@originalImageTimeLocation(viewData, i, viewData.HideCountries)
+					@rating(img.ImmichAsset.ExifInfo.Rating)
+					@originalImageTimeLocation(viewData, i)
 					@cameraData(img.ImmichAsset.ExifInfo)
 					@originalAssetData(img.ImmichAsset)
 					@people(img.ImmichAsset.People, viewData.ShowAgeYearUnit, viewData.AgeSwitchToYearsAfter, img.ImmichAsset.LocalDateTime)
 					@tags(img.ImmichAsset.Tags)
 					<div class="more-info--button-group">
 						if viewData.ShowMoreInfoImageLink {
-							<a class="more-info--image-link" href={ templ.SafeURL(ImmichAssetUrl(viewData.ImmichURL, viewData.ImmichExternalURL, img.ImmichAsset.ID)) } target="_blank">
-								View in Immich
+							<a class="more-info--image-link" href={ templ.SafeURL(ImmichAssetUrl(viewData.ImmichURL, viewData.ImmichExternalURL, img.ImmichAsset.ID, viewData.ButtonOpenInApp)) } target="_blank">
+								{ t("immich_link_btn") }
 							</a>
 						}
 						if viewData.Webhooks.ContainsEvent(webhooks.UserWebhookTriggerInfoOverlay.String()) {
@@ -66,14 +72,14 @@ templ RenderMoreInfo(viewData common.ViewData, secret string) {
 								hx-headers={ fmt.Sprintf(`{"X-Timestamp": "%d", "X-Signature": "%s", "kiosk-webhook-event": "user.webhook.trigger.info_overlay"}`, time.Now().Unix(), WebhookSignature(secret)) }
 								hx-swap="textContent"
 							>
-								Trigger webhook
+								{ t("trigger_webhook_btn") }
 							</button>
 						}
 					</div>
 				</div>
 				if viewData.ShowMoreInfoQrCode {
 					<div class="more-info--image--qr-code">
-						<img src={ utils.CreateQrCode(ImmichAssetUrl(viewData.ImmichURL, viewData.ImmichExternalURL, img.ImmichAsset.ID)) }/>
+						<img src={ utils.CreateQrCode(ImmichAssetUrl(viewData.ImmichURL, viewData.ImmichExternalURL, img.ImmichAsset.ID, viewData.QrCodeOpenInApp)) }/>
 					</div>
 				}
 			</div>
@@ -88,8 +94,9 @@ templ RenderMoreInfo(viewData common.ViewData, secret string) {
 //   - liked: Whether to show the liked animation
 //   - isButtonEnabled: Whether the button should be enabled
 //   - secret: Secret key for webhook signatures
-templ LikeButton(ID string, isLiked bool, liked bool, isButtonEnabled bool, secret string) {
+templ LikeButton(ID, selectedUser string, isLiked bool, liked bool, isButtonEnabled bool, secret string) {
 	{{
+		t := i18n.T()
 		webhook := webhooks.UserLikeInfoOverlay
 		if isLiked {
 			webhook = webhooks.UserUnlikeInfoOverlay
@@ -98,14 +105,14 @@ templ LikeButton(ID string, isLiked bool, liked bool, isButtonEnabled bool, secr
 	<button
 		if isLiked {
 			hx-post="/asset/unlike"
-			title="Unlike asset"
+			title={ t("unlike_asset") }
 		} else {
 			hx-post="/asset/like"
-			title="Like asset"
+			title={ t("like_asset") }
 		}
 		class={ "more-info--like-asset", templ.KV("is-liked", isLiked) }
 		hx-trigger="click throttle:2s"
-		hx-vals={ fmt.Sprintf("{\"assetID\": \"%s\"}", ID) }
+		hx-vals={ fmt.Sprintf(`{"assetID": "%s", "user": "%s"}`, ID, selectedUser) }
 		hx-swap="outerHTML"
 		disabled?={ !isButtonEnabled }
 	>
@@ -135,9 +142,9 @@ templ LikeButton(ID string, isLiked bool, liked bool, isButtonEnabled bool, secr
 		</svg>
 		<span>
 			if isLiked {
-				Liked
+				{ t("liked") }
 			} else {
-				Like
+				{ t("like") }
 			}
 		</span>
 	</button>
@@ -149,8 +156,9 @@ templ LikeButton(ID string, isLiked bool, liked bool, isButtonEnabled bool, secr
 //   - isHidden: Whether the asset is currently hidden
 //   - isButtonEnabled: Whether the button is enabled
 //   - secret: Secret key for webhook signatures
-templ HideButton(ID string, isHidden bool, isButtonEnabled bool, secret string) {
+templ HideButton(ID, selectedUser string, isHidden bool, isButtonEnabled bool, secret string) {
 	{{
+		t := i18n.T()
 		webhook := webhooks.UserHideInfoOverlay
 		if isHidden {
 			webhook = webhooks.UserUnhideInfoOverlay
@@ -160,13 +168,13 @@ templ HideButton(ID string, isHidden bool, isButtonEnabled bool, secret string) 
 		class={ "more-info--hide-asset", templ.KV("hidden", isHidden) }
 		if !isHidden {
 			hx-post="/asset/hide"
-			title="Hide asset"
+			title={ t("hide_asset") }
 		} else {
 			hx-post="/asset/unhide"
-			title="Unhide asset"
+			title={ t("unhide_asset") }
 		}
 		hx-trigger="click throttle:2s"
-		hx-vals={ fmt.Sprintf(`{"assetID": "%s", "tagName": "%s"}`, ID, kiosk.TagSkip) }
+		hx-vals={ fmt.Sprintf(`{"assetID": "%s", "tagName": "%s", "user": "%s"}`, ID, kiosk.TagSkip, selectedUser) }
 		hx-swap="outerHTML"
 		disabled?={ !isButtonEnabled }
 	>
@@ -182,7 +190,7 @@ templ HideButton(ID string, isHidden bool, isButtonEnabled bool, secret string) 
 			<!--!Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free Copyright 2025 Fonticons, Inc.-->
 			<path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c8.4-19.3 10.6-41.4 4.8-63.3c-11.1-41.5-47.8-69.4-88.6-71.1c-5.8-.2-9.2 6.1-7.4 11.7c2.1 6.4 3.3 13.2 3.3 20.3c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zM373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5L373 389.9z"></path>
 		</svg>
-		<span>Hide</span>
+		<span>{ t("hide") }</span>
 	</button>
 }
 
@@ -190,23 +198,26 @@ templ HideButton(ID string, isHidden bool, isButtonEnabled bool, secret string) 
 // Parameters:
 //   - exifInfo: EXIF information containing camera details
 templ cameraData(exifInfo immich.ExifInfo) {
-	{{ exif := AssetExif(exifInfo) }}
+	{{
+		t := i18n.T()
+		exif := AssetExif(exifInfo)
+		cameraData := AssetCameraData(exifInfo)
+	}}
 	<div>
 		<div>
 			<h3>
-				if exifInfo.Make != "" {
-					{ exifInfo.Make }
+				if cameraData != "" {
+					{ cameraData }
 				} else {
-					Unknown make
+					{ t("unknown_make") }
 				}
-				{ exifInfo.Model }
 			</h3>
 		</div>
 		<div>
 			if exif != "" {
 				@exifIcon(exif)
 			} else {
-				@exifIcon("Unknown stats")
+				@exifIcon(t("unknown_stats"))
 			}
 		</div>
 	</div>
@@ -216,10 +227,11 @@ templ cameraData(exifInfo immich.ExifInfo) {
 // Parameters:
 //   - img: The Immich asset containing image metadata
 templ originalAssetData(img immich.Asset) {
-	{{data := fmt.Sprintf("%d x %d <span class=\"asset--metadata--exif--seperator\">&#124;</span> %s",
-	img.ExifInfo.ExifImageWidth,
-	img.ExifInfo.ExifImageHeight,
-	humanize.Bytes(uint64(img.ExifInfo.FileSizeInByte)))
+	{{
+		data := fmt.Sprintf("%d x %d <span class=\"asset--metadata--exif--seperator\">&#124;</span> %s",
+			img.ExifInfo.ExifImageWidth,
+			img.ExifInfo.ExifImageHeight,
+			humanize.Bytes(uint64(img.ExifInfo.FileSizeInByte)))
 	}}
 	<div>
 		<div>
@@ -231,21 +243,29 @@ templ originalAssetData(img immich.Asset) {
 	</div>
 }
 
+templ rating(rating float32) {
+	<div class="more-info--rating">
+		@ratingStars(rating)
+	</div>
+}
+
 // originalImageTimeLocation displays the date/time and location of the image
 // Parameters:
 //   - viewData: The view data containing image information and display options
 //   - imageIndex: The index of the current image in the view data
-//   - hideCountries: List of country names to hide from location display
-templ originalImageTimeLocation(viewData common.ViewData, imageIndex int, hideCountries []string) {
-	{{ imageDatetime := AssetDateTime(viewData, imageIndex, true) }}
-	{{ location := AssetLocation(viewData.Assets[imageIndex].ImmichAsset.ExifInfo, hideCountries) }}
+templ originalImageTimeLocation(viewData common.ViewData, imageIndex int) {
+	{{
+		t := i18n.T()
+		imageDatetime := AssetDateTime(viewData, imageIndex, true)
+		location := AssetLocation(viewData.Assets[imageIndex].ImmichAsset.ExifInfo, config.ImageLocation{}, []string{})
+	}}
 	<div>
 		<div>
 			<h3>
 				if imageDatetime != "" {
 					{ imageDatetime }
 				} else {
-					Unknown date and time
+					{ t("unknown_date_time") }
 				}
 			</h3>
 		</div>
@@ -261,7 +281,7 @@ templ originalImageTimeLocation(viewData common.ViewData, imageIndex int, hideCo
 					@locationIcon(location)
 				}
 			} else {
-				@locationIcon("Unknown location")
+				@locationIcon(t("unknown_location"))
 			}
 		</div>
 	</div>
@@ -304,10 +324,13 @@ func people(people []immich.Person, addYearUnit bool, switchToYears int, assetDa
 			return err
 		}
 
+		t := i18n.T()
+		p := t("people")
+
 		return templ.Raw(`
 		<div>
 			<div>
-				<h3>People</h3>
+				<h3>`+p+`</h3>
 			</div>
 			<div>`+s+`</div>
 		</div>`).Render(ctx, w)
@@ -344,10 +367,13 @@ func tags(tags immich.Tags) templ.Component {
 			return err
 		}
 
+		t := i18n.T()
+		tags := t("tags")
+
 		return templ.Raw(`
 			<div>
 				<div>
-					<h3>Tags</h3>
+					<h3>`+tags+`</h3>
 				</div>
 				<div class="more-info--tag">`+s+`</div>
 			</div>
@@ -360,14 +386,19 @@ func tags(tags immich.Tags) templ.Component {
 //   - baseUrl: The base URL of the Immich instance
 //   - externalUrl: The external URL of the Immich instance, if different from base URL
 //   - imageID: The ID of the image to view
+//   - useAppLink: If true, uses https://my.immich.app instead of the base/external URL
 //
 // Returns:
 //   - The complete URL string for viewing the image, or '#' if URL parsing fails
-func ImmichAssetUrl(baseUrl, externalUrl, imageID string) string {
+func ImmichAssetUrl(baseUrl, externalUrl, imageID string, useAppLink bool) string {
 
 	urlToParse := externalUrl
 	if urlToParse == "" {
 		urlToParse = baseUrl
+	}
+
+	if useAppLink {
+		urlToParse = "https://my.immich.app"
 	}
 
 	u, err := url.Parse(urlToParse)
